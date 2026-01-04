@@ -1,0 +1,33 @@
+{
+  "name": "whatsapp-bot-panel",
+  "version": "2.0.0",
+  "description": "WhatsApp Bot Yönetim Paneli - Web Arayüzlü",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "old": "node index.js"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "automation",
+    "web-panel"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "node-schedule": "^2.1.1",
+    "ntp-time": "^2.1.0",
+    "qrcode": "^1.5.3",
+    "qrcode-terminal": "^0.12.0",
+    "socket.io": "^4.5.4",
+    "whatsapp-web.js": "github:pedroslopez/whatsapp-web.js"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
