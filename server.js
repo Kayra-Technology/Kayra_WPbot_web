@@ -189,7 +189,7 @@ async function createIdaGroup() {
         }
 
         // Grup adı kontrolü
-        const groupName = config.idaGroup.name || 'IDA Grubu';
+        const groupName = config.group.name || 'IDA Grubu';
         if (!groupName || groupName.trim().length === 0) {
             throw new Error('Grup adı belirtilmemiş! Lütfen config\'den grup adı girin.');
         }
@@ -199,7 +199,7 @@ async function createIdaGroup() {
         // Sadece eski grup verilerini temizle (numaralar değil!)
         config.inviteHistory = {};
         config.inviteStats = { date: '', count: 0 };
-        config.idaGroup.inviteLink = '';
+        config.group.inviteLink = '';
 
         // Grup oluştur
         const group = await client.createGroup(groupName, []);
@@ -208,11 +208,11 @@ async function createIdaGroup() {
             throw new Error('Grup oluşturuldu ancak ID alınamadı');
         }
 
-        config.idaGroup.groupId = group.gid._serialized;
-        config.idaGroup.name = groupName;
+        config.group.groupId = group.gid._serialized;
+        config.group.name = groupName;
 
         saveConfig();
-        log(`✅ Grup oluşturuldu! ID: ${config.idaGroup.groupId}`, 'success');
+        log(`✅ Grup oluşturuldu! ID: ${config.group.groupId}`, 'success');
 
         // WhatsApp sunucularının grubu senkronize etmesi için bekle
         log('⏳ WhatsApp sunucularının grubu senkronize etmesi bekleniyor (20 saniye)...', 'info');
@@ -225,7 +225,7 @@ async function createIdaGroup() {
 
         while (verificationAttempts > 0 && !groupVerified) {
             try {
-                const chat = await client.getChatById(config.idaGroup.groupId);
+                const chat = await client.getChatById(config.group.groupId);
                 if (chat && chat.isGroup) {
                     groupVerified = true;
                     log('✅ Grup doğrulandı ve erişilebilir!', 'success');
@@ -398,13 +398,13 @@ function recordInvite(number) {
 async function sendInviteToNumbers() {
     log('Davet linki gönderme işlemi başlatılıyor...', 'info');
 
-    if (!config.idaGroup.groupId) {
+    if (!config.group.groupId) {
         log('IDA Grubu henüz oluşturulmamış!', 'error');
         return;
     }
 
     // Önce config'te otomatik kaydedilmiş link var mı kontrol et
-    let inviteLink = config.idaGroup.inviteLink;
+    let inviteLink = config.group.inviteLink;
 
     if (inviteLink && inviteLink.includes('chat.whatsapp.com/')) {
         log('✅ Kaydedilmiş davet linki kullanılıyor', 'success');
@@ -416,7 +416,7 @@ async function sendInviteToNumbers() {
 
         // Şimdi davet linkini al ve kaydet
         log('Davet linki otomatik alınıyor...', 'info');
-        inviteLink = await getGroupInviteLink(config.idaGroup.groupId);
+        inviteLink = await getGroupInviteLink(config.group.groupId);
 
         if (!inviteLink) {
             log('❌ Davet linki alınamadı!', 'error');
@@ -425,7 +425,7 @@ async function sendInviteToNumbers() {
         }
 
         // Başarılı link alındı, config'e kaydet
-        config.idaGroup.inviteLink = inviteLink;
+        config.group.inviteLink = inviteLink;
         saveConfig();
         log('✅ Davet linki kaydedildi', 'success');
     }
@@ -438,10 +438,10 @@ async function sendInviteToNumbers() {
     };
 
     const messageTemplates = [
-        `Merhaba,\n\n${config.idaGroup.name} grubuna katılımınız beklenmektedir.\n\nKatılım linki:\n${inviteLink}`,
-        `Sayın ilgili,\n\n${config.idaGroup.name} grubuna davetlisiniz. Katılım sağlamanız beklenmektedir.\n\n${inviteLink}`,
-        `${config.idaGroup.name} grubuna katılım linkiniz:\n\n${inviteLink}\n\nKatılımınız beklenmektedir.`,
-        `Merhaba,\n\n${config.idaGroup.name} için grup oluşturulmuştur. Aşağıdaki linkten katılım sağlayabilirsiniz:\n\n${inviteLink}`
+        `Merhaba,\n\n${config.group.name} grubuna katılımınız beklenmektedir.\n\nKatılım linki:\n${inviteLink}`,
+        `Sayın ilgili,\n\n${config.group.name} grubuna davetlisiniz. Katılım sağlamanız beklenmektedir.\n\n${inviteLink}`,
+        `${config.group.name} grubuna katılım linkiniz:\n\n${inviteLink}\n\nKatılımınız beklenmektedir.`,
+        `Merhaba,\n\n${config.group.name} için grup oluşturulmuştur. Aşağıdaki linkten katılım sağlayabilirsiniz:\n\n${inviteLink}`
     ];
 
     let sentCount = 0;
@@ -455,7 +455,7 @@ async function sendInviteToNumbers() {
             const chatId = `${number}@c.us`;
             const message = safetySettings.messageVariations
                 ? messageTemplates[Math.floor(Math.random() * messageTemplates.length)]
-                : `${config.idaGroup.name} grubuna davetlisiniz!\n\n${inviteLink}`;
+                : `${config.group.name} grubuna davetlisiniz!\n\n${inviteLink}`;
 
             await client.sendMessage(chatId, message);
             recordInvite(number);
@@ -483,13 +483,13 @@ async function sendInviteToNumbers() {
 async function cleanupGroup() {
     log('Grup temizleme işlemi başlatılıyor...', 'info');
 
-    if (!config.idaGroup.groupId) {
+    if (!config.group.groupId) {
         log('IDA Grubu henüz oluşturulmamış!', 'error');
         return;
     }
 
     try {
-        const chat = await client.getChatById(config.idaGroup.groupId);
+        const chat = await client.getChatById(config.group.groupId);
         if (!chat.isGroup) {
             log('Bu bir grup değil!', 'error');
             return;
@@ -499,7 +499,7 @@ async function cleanupGroup() {
         if (chat.participants && chat.participants.length > 0) {
             participants = chat.participants;
         } else {
-            const metadata = await client.groupMetadata(config.idaGroup.groupId);
+            const metadata = await client.groupMetadata(config.group.groupId);
             if (metadata && metadata.participants) {
                 participants = metadata.participants;
             }
@@ -574,7 +574,7 @@ app.get('/api/logs', (req, res) => {
 app.post('/api/group/create', async (req, res) => {
     try {
         await createIdaGroup();
-        res.json({ success: true, groupId: config.idaGroup.groupId });
+        res.json({ success: true, groupId: config.group.groupId });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -603,10 +603,10 @@ app.post('/api/group/cleanup', async (req, res) => {
 // Davet linki al
 app.get('/api/group/invite-link', async (req, res) => {
     try {
-        if (!config.idaGroup.groupId) {
+        if (!config.group.groupId) {
             return res.status(400).json({ success: false, error: 'Grup oluşturulmamış' });
         }
-        const link = await getGroupInviteLink(config.idaGroup.groupId);
+        const link = await getGroupInviteLink(config.group.groupId);
         res.json({ success: true, link });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });

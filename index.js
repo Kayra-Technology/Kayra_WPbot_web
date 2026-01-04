@@ -44,12 +44,12 @@ async function createIdaGroup() {
 
         // Grup oluşturmak için en az bir katılımcı gerekli
         // Bot kendi numarasını kullanacak, sonra diğerlerini ekleyecek
-        const group = await client.createGroup(config.idaGroup.name, []);
+        const group = await client.createGroup(config.group.name, []);
 
-        config.idaGroup.groupId = group.gid._serialized;
+        config.group.groupId = group.gid._serialized;
         saveConfig();
 
-        log(`IDA Grubu oluşturuldu! ID: ${config.idaGroup.groupId}`);
+        log(`IDA Grubu oluşturuldu! ID: ${config.group.groupId}`);
         return group;
     } catch (error) {
         log(`Grup oluşturma hatası: ${error.message}`);
@@ -75,12 +75,12 @@ async function getGroupInviteLink(groupId) {
 async function sendInviteToNumbers() {
     log('Davet linki gönderme işlemi başlatılıyor...');
 
-    if (!config.idaGroup.groupId) {
+    if (!config.group.groupId) {
         log('IDA Grubu henüz oluşturulmamış!');
         return;
     }
 
-    const inviteLink = await getGroupInviteLink(config.idaGroup.groupId);
+    const inviteLink = await getGroupInviteLink(config.group.groupId);
     if (!inviteLink) {
         log('Davet linki alınamadı!');
         return;
@@ -101,13 +101,13 @@ async function sendInviteToNumbers() {
 async function cleanupGroup() {
     log('Grup temizleme işlemi başlatılıyor...');
 
-    if (!config.idaGroup.groupId) {
+    if (!config.group.groupId) {
         log('IDA Grubu henüz oluşturulmamış!');
         return;
     }
 
     try {
-        const chat = await client.getChatById(config.idaGroup.groupId);
+        const chat = await client.getChatById(config.group.groupId);
         if (!chat.isGroup) {
             log('Bu bir grup değil!');
             return;
@@ -125,7 +125,7 @@ async function cleanupGroup() {
         } else {
             // Alternatif: groupMetadata kullan
             try {
-                const metadata = await client.groupMetadata(config.idaGroup.groupId);
+                const metadata = await client.groupMetadata(config.group.groupId);
                 if (metadata && metadata.participants) {
                     participants = metadata.participants;
                     log(`groupMetadata ile ${participants.length} katılımcı bulundu`);
@@ -231,10 +231,10 @@ client.on('ready', async () => {
     setupScheduledTasks();
 
     // IDA Grubu yoksa bilgi ver
-    if (!config.idaGroup.groupId) {
+    if (!config.group.groupId) {
         log('IDA Grubu bulunamadı. Oluşturmak için bota DM\'den !idaolustur yazın.');
     } else {
-        log(`Mevcut IDA Grubu: ${config.idaGroup.groupId}`);
+        log(`Mevcut IDA Grubu: ${config.group.groupId}`);
     }
 
     // Mevcut grupları listele
@@ -314,7 +314,7 @@ client.on('message', async (msg) => {
 📊 Bot Durumu
 ━━━━━━━━━━━━━━━
 🕐 Türkiye Saati: ${turkeyTime.toLocaleString('tr-TR')}
-📱 IDA Grup ID: ${config.idaGroup.groupId || 'Oluşturulmamış'}
+📱 IDA Grup ID: ${config.group.groupId || 'Oluşturulmamış'}
 👥 Davet Listesi: ${config.inviteNumbers.length} numara
 ⏰ Davet: Her Pazar 12:00
 🧹 Temizlik: Her Cumartesi 12:00

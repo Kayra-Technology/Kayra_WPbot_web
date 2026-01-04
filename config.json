@@ -1,9 +1,5 @@
 {
-  "idaGroup": {
-    "name": "",
-    "groupId": "",
-    "inviteLink": ""
-  },
+  "group": {},
   "inviteNumbers": [],
   "monitoredGroups": [],
   "autoReplies": {

@@ -348,7 +348,7 @@ async function createGroupAndInvite() {
 
         // 1. ÖNCELİKLE ESKİ NUMARALARI VE VERİLERİ TEMİZLE
         await axios.post('/api/config', {
-            idaGroup: {
+            group: {
                 name: groupName,
                 groupId: '',  // Eski grupId'yi temizle
                 inviteLink: ''
@@ -385,7 +385,7 @@ async function createGroupAndInvite() {
         refreshedConfig = await axios.get('/api/config');
         config = refreshedConfig.data;
 
-        if (!config.idaGroup?.groupId) {
+        if (!config.group?.groupId) {
             throw new Error('Grup ID bulunamadı! Lütfen tekrar deneyin.');
         }
 
@@ -439,7 +439,7 @@ async function sendInvites() {
         return;
     }
 
-    if (!config.idaGroup?.groupId) {
+    if (!config.group?.groupId) {
         showAlert('groupAlert', 'Önce grup oluşturun', 'error');
         return;
     }
@@ -463,7 +463,7 @@ async function cleanupGroup() {
         return;
     }
 
-    if (!config.idaGroup?.groupId) {
+    if (!config.group?.groupId) {
         showAlert('groupAlert', 'Önce grup oluşturun', 'error');
         return;
     }
@@ -487,7 +487,7 @@ async function getInviteLink() {
         return;
     }
 
-    if (!config.idaGroup?.groupId) {
+    if (!config.group?.groupId) {
         showAlert('groupAlert', 'Önce grup oluşturun', 'error');
         return;
     }

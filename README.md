@@ -28,7 +28,7 @@ npm install
 
 ```json
 {
-  "idaGroup": {
+  "group": {
     "name": "Grup Adınız",
     "groupId": ""
   },

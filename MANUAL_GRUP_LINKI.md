@@ -50,7 +50,7 @@ Her denemede WhatsApp'tan yeni davet kodu oluşturulur.
 
    ```json
    {
-     "idaGroup": {
+     "group": {
        "name": "Grup Adınız",
        "groupId": "120363404938457458@g.us",
        "inviteLink": "https://chat.whatsapp.com/BURAYA-LINKI-YAPIŞTIRIN"
