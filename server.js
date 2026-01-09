@@ -69,6 +69,8 @@ function initializeWhatsAppClient() {
         return;
     }
 
+    log('WhatsApp Client yapılandırması hazırlanıyor...', 'info');
+
     client = new Client({
         authStrategy: new LocalAuth(),
         puppeteer: {
@@ -84,11 +86,32 @@ function initializeWhatsAppClient() {
         }
     });
 
+    log('Event listener\'lar ekleniyor...', 'info');
+
     // QR kodu
-    client.on('qr', async (qr) => {
-        log('QR Kodu oluşturuldu', 'info');
-        qrCodeData = await qrcode.toDataURL(qr);
-        io.emit('qr', qrCodeData);
+    client.on('qr', (qr) => {
+        log('QR Kodu alındı, oluşturuluyor...', 'info');
+
+        // QR kodu oluştur
+        qrcode.toDataURL(qr, {
+            errorCorrectionLevel: 'M',
+            type: 'image/png',
+            width: 400,
+            margin: 1
+        })
+        .then((dataUrl) => {
+            qrCodeData = dataUrl;
+            log('QR Kodu başarıyla oluşturuldu', 'success');
+            log(`QR Kodu boyutu: ${dataUrl.length} karakter`, 'info');
+
+            // Socket.IO ile gönder
+            io.emit('qr', qrCodeData);
+            log('QR Kodu web paneline gönderildi', 'success');
+        })
+        .catch((err) => {
+            log(`QR Kodu oluşturma hatası: ${err.message}`, 'error');
+            log(`Hata detayı: ${err.stack}`, 'error');
+        });
     });
 
     // Bağlantı hazır
@@ -118,6 +141,16 @@ function initializeWhatsAppClient() {
         log(`Bağlantı kesildi: ${reason}`, 'error');
         isClientReady = false;
         io.emit('disconnected', reason);
+    });
+
+    // Yükleniyor durumu
+    client.on('loading_screen', (percent, message) => {
+        log(`Yükleniyor: ${percent}% - ${message}`, 'info');
+    });
+
+    // Hata durumu
+    client.on('change_state', (state) => {
+        log(`WhatsApp durumu değişti: ${state}`, 'info');
     });
 
     // Mesajları dinle
@@ -196,11 +229,10 @@ async function createIdaGroup() {
 
         log(`🔄 "${groupName}" grubu oluşturuluyor...`, 'info');
 
-        // Eski grup verilerini ve numaraları temizle
+        // Eski grup verilerini temizle (inviteNumbers'ı koru - önceden eklenmiş olabilir)
         config.inviteHistory = {};
         config.inviteStats = { date: '', count: 0 };
         config.group.inviteLink = '';
-        config.inviteNumbers = [];  // Numaraları da temizle
 
         // Grup oluştur
         const group = await client.createGroup(groupName, []);
