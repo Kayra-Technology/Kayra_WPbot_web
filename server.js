@@ -196,10 +196,11 @@ async function createIdaGroup() {
 
         log(`🔄 "${groupName}" grubu oluşturuluyor...`, 'info');
 
-        // Sadece eski grup verilerini temizle (numaralar değil!)
+        // Eski grup verilerini ve numaraları temizle
         config.inviteHistory = {};
         config.inviteStats = { date: '', count: 0 };
         config.group.inviteLink = '';
+        config.inviteNumbers = [];  // Numaraları da temizle
 
         // Grup oluştur
         const group = await client.createGroup(groupName, []);
