@@ -1,5 +1,9 @@
 {
-  "group": {},
+  "group": {
+    "name": "Örnek Grup",
+    "groupId": "",
+    "inviteLink": ""
+  },
   "inviteNumbers": [],
   "monitoredGroups": [],
   "autoReplies": {
