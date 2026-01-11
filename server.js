@@ -856,8 +856,16 @@ io.on('connection', (socket) => {
     socket.emit('status', {
         isReady: isClientReady,
         hasQR: !!qrCodeData,
-        qrCode: qrCodeData
+        qrCode: qrCodeData,
+        botNumber: isClientReady ? client.info.wid.user : null,
+        botName: isClientReady ? client.info.pushname : null
     });
+
+    // QR kod varsa ayrıca qr eventi ile de gönder
+    if (qrCodeData && !isClientReady) {
+        log(`QR Kodu yeni bağlantıya gönderiliyor: ${socket.id}`, 'info');
+        socket.emit('qr', qrCodeData);
+    }
 
     socket.emit('logs', logs);
     socket.emit('config', config);
