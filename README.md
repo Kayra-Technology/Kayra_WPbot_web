@@ -1,263 +1,200 @@
-# WhatsApp Bot Yönetim Paneli
+# 📱 WhatsApp Bot Panel
 
-Modern web arayüzü ile WhatsApp bot yönetim sistemi. Grup oluşturma, mesaj gönderme, numara yönetimi ve zamanlama özelliklerine sahip tam özellikli WhatsApp otomasyon botu.
+WhatsApp Web üzerinden çalışan, grup oluşturma ve toplu davet gönderme özelliklerine sahip profesyonel bir bot paneli.
 
-## Özellikler
+![Node.js](https://img.shields.io/badge/Node.js-18+-green)
+![WhatsApp](https://img.shields.io/badge/WhatsApp-Web-25D366)
+![License](https://img.shields.io/badge/License-MIT-blue)
 
-- **Web Arayüzü**: Modern, responsive ve kullanıcı dostu web paneli
-- **Real-time Güncelleme**: Socket.IO ile anlık durum güncellemeleri
-- **QR Kod Okuma**: Web arayüzünden QR kod tarama
-- **Numara Yönetimi**: Davet edilecek numaraları ekle/sil/düzenle
-- **Grup Yönetimi**: Grup oluşturma, davet gönderme, temizleme
-- **Mesaj Gönderme**: Tekil ve toplu mesaj gönderme
-- **Zamanlama**: Otomatik davet ve temizleme görevleri
-- **Dashboard**: İstatistikler ve canlı loglar
-- **Otomatik Yanıtlar**: Gruplarda otomatik mesaj yanıtlama
+## ✨ Özellikler
 
-## Kurulum
+### 🔐 Çoklu Oturum Desteği
+- Her kullanıcı için benzersiz session ID
+- Oturumlar arası izolasyon
+- Otomatik session yönetimi
 
-### 1. Bağımlılıkları Yükle
+### 📞 Gelişmiş Numara Formatlama
+Çeşitli telefon numarası formatlarını otomatik olarak tanır ve düzeltir:
+
+| Girdi Formatı | Çıktı |
+|---------------|-------|
+| `05529444589` | `905529444589` |
+| `5529444589` | `905529444589` |
+| `905529444589` | `905529444589` |
+| `+90 552 944 45 89` | `905529444589` |
+| `0090-552-944-4589` | `905529444589` |
+| `0212 123 45 67` | `902121234567` |
+
+✅ GSM numaraları (5XX)  
+✅ Sabit hat numaraları (2XX, 3XX, 4XX)  
+✅ Uluslararası formatlar (+90, 0090)  
+✅ Boşluk, tire, parantez temizleme
+
+### 👥 Grup Yönetimi
+- Otomatik grup oluşturma
+- Davet linki alma
+- Grup temizleme (üyeleri çıkarma)
+- Grup listesi görüntüleme
+
+### 📨 Toplu Davet Gönderimi
+- URL navigasyonu ile güvenilir mesaj gönderme
+- Puppeteer tabanlı otomasyon
+- Numara doğrulama (WhatsApp'ta kayıtlı mı?)
+- Günlük limit kontrolü
+- Rastgele mesaj varyasyonları
+
+### ⚙️ Güvenlik Ayarları
+- Günlük davet limiti (varsayılan: 50)
+- Minimum/maksimum gecikme süresi
+- Mesaj varyasyonları (ban koruması)
+
+### 📊 İstatistikler
+- Günlük gönderim sayısı
+- Toplam numara sayısı
+- Davet geçmişi
+
+## 🚀 Kurulum
+
+### Gereksinimler
+- Node.js 18+
+- npm veya yarn
+- Chrome/Chromium (Puppeteer için)
+
+### Adımlar
 
 ```bash
+# Repoyu klonla
+git clone https://github.com/Kayra-Technology/Kayra_WPbot_web.git
+cd Kayra_WPbot_web
+
+# Bağımlılıkları yükle
 npm install
-```
 
-### 2. Yapılandırma
-
-`config.json` dosyasını düzenleyin:
-
-```json
-{
-  "group": {
-    "name": "Grup Adınız",
-    "groupId": ""
-  },
-  "inviteNumbers": [
-    "905xxxxxxxxx"
-  ],
-  "monitoredGroups": [],
-  "autoReplies": {
-    "ping": "pong",
-    "merhaba": "Merhaba! Nasıl yardımcı olabilirim?"
-  },
-  "schedule": {
-    "inviteDay": 0,
-    "inviteHour": 12,
-    "inviteMinute": 0,
-    "cleanupDay": 6,
-    "cleanupHour": 12,
-    "cleanupMinute": 0
-  }
-}
-```
-
-### 3. Sunucuyu Başlat
-
-```bash
+# Sunucuyu başlat
 npm start
 ```
 
-Veya geliştirme modunda (otomatik yeniden başlatma):
+## 📖 Kullanım
 
+1. **Sunucuyu Başlat**
+   ```bash
+   node server.js
+   ```
+
+2. **Tarayıcıda Aç**
+   ```
+   http://localhost:3000
+   ```
+
+3. **QR Kodu Tara**
+   - WhatsApp uygulamasından QR kodu tarayın
+   - Bağlantı kurulunca yeşil onay görünecek
+
+4. **Numaraları Ekle**
+   - Toplu numara ekle bölümüne numaraları girin
+   - Her satıra bir numara veya virgülle ayırın
+   - Format otomatik düzeltilir
+
+5. **Grup Oluştur**
+   - Grup adı girin
+   - "Grup Oluştur" butonuna tıklayın
+
+6. **Davet Gönder**
+   - "Davet Gönder" butonuna tıklayın
+   - İlerleme loglardan takip edilebilir
+
+## 🔧 API Endpoints
+
+### Session
+| Endpoint | Method | Açıklama |
+|----------|--------|----------|
+| `/api/session/create` | POST | Yeni session oluştur |
+| `/api/status` | GET | Session durumu |
+| `/api/config` | GET/POST | Konfigürasyon al/güncelle |
+| `/api/logs` | GET | Logları al |
+
+### Grup
+| Endpoint | Method | Açıklama |
+|----------|--------|----------|
+| `/api/group/create` | POST | Grup oluştur |
+| `/api/group/invite-link` | GET | Davet linki al |
+| `/api/group/send-invites` | POST | Davet gönder |
+| `/api/group/cleanup` | POST | Grubu temizle |
+| `/api/groups` | GET | Grupları listele |
+
+### Numara
+| Endpoint | Method | Açıklama |
+|----------|--------|----------|
+| `/api/numbers/add` | POST | Tek numara ekle |
+| `/api/numbers/add-bulk` | POST | Toplu numara ekle |
+| `/api/numbers/remove` | POST | Numara sil |
+
+### Mesaj
+| Endpoint | Method | Açıklama |
+|----------|--------|----------|
+| `/api/message/send` | POST | Tek mesaj gönder |
+| `/api/message/send-bulk` | POST | Toplu mesaj gönder |
+
+## 🛡️ Güvenlik Özellikleri
+
+### Ban Koruması
+- **Rastgele Gecikmeler**: Her mesaj arasında 3-8 saniye bekleme
+- **Günlük Limit**: Maksimum 50 davet/gün
+- **Mesaj Varyasyonları**: 4 farklı mesaj şablonu
+- **Numara Doğrulama**: Kayıtlı olmayan numaralar atlanır
+
+### Teknik Güvenlik
+- Session izolasyonu
+- CORS koruması
+- Hata yakalama ve loglama
+
+## 📁 Proje Yapısı
+
+```
+Kayra_WPbot_web/
+├── server.js           # Ana sunucu dosyası
+├── sessionManager.js   # WhatsApp session yönetimi
+├── package.json        # Bağımlılıklar
+├── public/             # Frontend dosyaları
+│   ├── index.html      # Ana sayfa
+│   ├── style.css       # Stiller
+│   └── script.js       # Frontend JavaScript
+└── sessions/           # Session verileri (otomatik oluşturulur)
+```
+
+## ⚠️ Önemli Notlar
+
+1. **WhatsApp Politikaları**: Bu bot eğitim amaçlıdır. WhatsApp'ın kullanım koşullarını ihlal etmemeye dikkat edin.
+
+2. **Ban Riski**: Toplu mesaj gönderimi hesabınızın banlanmasına yol açabilir. Güvenlik ayarlarını kullanın.
+
+3. **Numara Formatı**: Türkiye numaraları için başında 0 veya 90 olup olmadığı önemli değil, sistem otomatik düzeltir.
+
+## 🐛 Bilinen Sorunlar ve Çözümler
+
+### markedUnread Hatası
+WhatsApp Web güncellemelerinden kaynaklanan bu hata, URL navigasyonu yöntemiyle çözülmüştür.
+
+### Port Kullanımda
 ```bash
-npm run dev
+fuser -k 3000/tcp
+node server.js
 ```
 
-### 4. Web Paneline Eriş
+## 📝 Lisans
 
-Tarayıcınızda şu adresi açın:
+MIT License - Detaylar için [LICENSE](LICENSE) dosyasına bakın.
 
-```
-http://localhost:3000
-```
+## 🤝 Katkıda Bulunma
 
-## Kullanım
-
-### İlk Kurulum
-
-1. Web paneline gidin (`http://localhost:3000`)
-2. **QR Kod** sekmesine geçin
-3. WhatsApp uygulamanızla QR kodu tarayın
-4. Bağlantı kurulduktan sonra dashboard'da "Çevrimiçi" durumunu görmelisiniz
-
-### Numara Yönetimi
-
-1. **Numaralar** sekmesine gidin
-2. Yeni numara ekle kutusuna numara girin (örn: 905xxxxxxxxx)
-3. "Ekle" butonuna tıklayın
-4. Listeyi görüntüleyin ve istenmeyen numaraları silin
-
-### Grup İşlemleri
-
-**Grup Oluştur:**
-- **Gruplar** sekmesinde "Grup Oluştur" butonuna tıklayın
-- IDA Grubu otomatik olarak oluşturulur
-
-**Davet Gönder:**
-- "Davet Gönder" butonuna tıklayın
-- Numara listesindeki tüm kişilere davet linki gönderilir
-
-**Grubu Temizle:**
-- "Grubu Temizle" butonuna tıklayın
-- Gruptan bot hariç tüm üyeler çıkarılır
-
-**Davet Linki Al:**
-- "Davet Linki Al" butonuna tıklayın
-- Link otomatik olarak kopyalanır
-
-### Mesaj Gönderme
-
-**Tekil Mesaj:**
-1. **Mesajlar** sekmesine gidin
-2. Alıcı numarasını girin (örn: 905xxxxxxxxx)
-3. Mesajınızı yazın
-4. "Gönder" butonuna tıklayın
-
-**Toplu Mesaj:**
-1. Alıcı kutusuna virgülle ayrılmış numaralar girin
-2. Örnek: `905xxxxxxxxx,905yyyyyyyyy,905zzzzzzzzz`
-3. Mesajınızı yazın
-4. "Gönder" butonuna tıklayın
-
-### Zamanlama Ayarları
-
-1. **Zamanlama** sekmesine gidin
-2. Davet ve temizlik görevleri için gün, saat ve dakika ayarlayın
-3. Gün formatı: 0=Pazar, 1=Pazartesi, ..., 6=Cumartesi
-4. "Kaydet" butonuna tıklayın
-
-**Varsayılan Zamanlama:**
-- Davet Gönderme: Her Pazar 12:00
-- Grup Temizleme: Her Cumartesi 12:00
-
-### Log İzleme
-
-**Loglar** sekmesinde tüm bot aktivitelerini gerçek zamanlı olarak izleyebilirsiniz:
-- Mesaj gönderme/alma
-- Grup işlemleri
-- Hata mesajları
-- Sistem bildirimleri
-
-## API Endpoints
-
-Sunucu aşağıdaki REST API endpoint'lerini sunar:
-
-### Durum & Config
-- `GET /api/status` - Bot durumunu al
-- `GET /api/config` - Yapılandırmayı al
-- `POST /api/config` - Yapılandırmayı güncelle
-- `GET /api/logs` - Logları al
-
-### Grup İşlemleri
-- `POST /api/group/create` - Grup oluştur
-- `POST /api/group/send-invites` - Davet gönder
-- `POST /api/group/cleanup` - Grubu temizle
-- `GET /api/group/invite-link` - Davet linki al
-- `GET /api/groups` - Tüm grupları listele
-
-### Mesaj İşlemleri
-- `POST /api/message/send` - Tekil mesaj gönder
-- `POST /api/message/send-bulk` - Toplu mesaj gönder
-
-### Numara İşlemleri
-- `POST /api/numbers/add` - Numara ekle
-- `POST /api/numbers/remove` - Numara sil
-
-### Zamanlama
-- `POST /api/schedule/update` - Zamanlama güncelle
-
-## Socket.IO Events
-
-Real-time güncellemeler için Socket.IO olayları:
-
-**Server -> Client:**
-- `qr` - QR kodu
-- `ready` - Bot hazır
-- `authenticated` - Kimlik doğrulandı
-- `auth_failure` - Kimlik doğrulama hatası
-- `disconnected` - Bağlantı kesildi
-- `log` - Yeni log girişi
-- `config-updated` - Config güncellendi
-- `message` - Yeni mesaj alındı
-
-## Proje Yapısı
-
-```
-├── server.js           # Ana sunucu (Express + Socket.IO + WhatsApp)
-├── index.js            # Eski komut satırı bot (opsiyonel)
-├── config.json         # Yapılandırma dosyası
-├── package.json        # NPM bağımlılıkları
-├── public/             # Web arayüzü
-│   ├── index.html      # Ana HTML
-│   └── app.js          # Frontend JavaScript
-└── .wwebjs_auth/       # WhatsApp oturum verileri (otomatik oluşur)
-```
-
-## Teknolojiler
-
-**Backend:**
-- Node.js
-- Express.js
-- Socket.IO
-- whatsapp-web.js
-- node-schedule
-- qrcode
-
-**Frontend:**
-- HTML5
-- CSS3 (Modern gradient tasarım)
-- Vanilla JavaScript
-- Socket.IO Client
-- Axios
-
-## Güvenlik Notları
-
-- Web paneli varsayılan olarak `localhost:3000` üzerinde çalışır
-- Üretim ortamında kullanmak için:
-  - HTTPS kullanın
-  - Kimlik doğrulama ekleyin
-  - CORS ayarlarını sıkılaştırın
-  - Güvenlik duvarı kuralları ayarlayın
-
-## Sorun Giderme
-
-### QR Kod Görünmüyor
-- Sunucuyu yeniden başlatın
-- `.wwebjs_auth` klasörünü silin ve tekrar deneyin
-- Chrome/Chromium yüklü olduğundan emin olun
-
-### Mesaj Gönderilmiyor
-- WhatsApp bağlantısının aktif olduğundan emin olun
-- Numara formatının doğru olduğunu kontrol edin (90XXXXXXXXXX)
-- Rate limit'e dikkat edin (mesajlar arası 1-2 saniye bekleyin)
-
-### Grup İşlemleri Çalışmıyor
-- Botun grup yöneticisi olduğundan emin olun
-- Grup ID'sinin doğru olduğunu kontrol edin
-
-## Eski Komut Satırı Botu
-
-Eski komut satırı botunu çalıştırmak için:
-
-```bash
-npm run old
-```
-
-## Lisans
-
-ISC
-
-## Katkıda Bulunma
-
-Pull request'ler memnuniyetle karşılanır. Büyük değişiklikler için lütfen önce bir issue açın.
-
-## Destek
-
-Sorun yaşıyorsanız:
-1. README dosyasını dikkatlice okuyun
-2. Logları kontrol edin
-3. Issue açın
+1. Fork edin
+2. Feature branch oluşturun (`git checkout -b feature/amazing`)
+3. Commit edin (`git commit -m 'Add amazing feature'`)
+4. Push edin (`git push origin feature/amazing`)
+5. Pull Request açın
 
 ---
 
-**Not:** Bu bot WhatsApp'ın resmi API'sini kullanmaz ve WhatsApp kullanım şartlarını ihlal edebilir. Kendi sorumluluğunuzda kullanın.
+<p align="center">
+  <b>Kayra Technology</b> tarafından ❤️ ile geliştirildi
+</p>

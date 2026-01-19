@@ -1,0 +1,34 @@
+{
+  "group": {
+    "name": "SASASAS",
+    "groupId": "120363423821923622@g.us",
+    "inviteLink": "https://chat.whatsapp.com/GboSfiIlVV4Co6USaUle06"
+  },
+  "inviteNumbers": [
+    "905529444589"
+  ],
+  "inviteHistory": {
+    "905529444589": {
+      "lastInvite": "2026-01-19T13:37:03.988Z",
+      "count": 1
+    }
+  },
+  "inviteStats": {
+    "date": "2026-01-19",
+    "count": 1
+  },
+  "safetySettings": {
+    "minDelay": 3000,
+    "maxDelay": 8000,
+    "dailyLimit": 50,
+    "messageVariations": true
+  },
+  "schedule": {
+    "inviteDay": 1,
+    "inviteHour": 9,
+    "inviteMinute": 0,
+    "cleanupDay": 0,
+    "cleanupHour": 18,
+    "cleanupMinute": 0
+  }
+}
