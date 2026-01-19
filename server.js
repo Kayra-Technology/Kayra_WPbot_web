@@ -183,9 +183,20 @@ function initializeWhatsAppClient() {
         }
     });
 
-    client.initialize();
+    client.initialize().catch(err => {
+        log(`WhatsApp Client başlatma hatası: ${err.message}`, 'error');
+    });
     log('WhatsApp Client başlatılıyor...', 'info');
 }
+
+// Global hata yakalama - uygulama crash etmesin
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
 
 // Zamanlanmış görevleri ayarla
 function setupScheduledTasks() {
