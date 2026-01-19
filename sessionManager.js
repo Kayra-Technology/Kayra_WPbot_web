@@ -341,11 +341,12 @@ class WhatsAppSession {
         const safetySettings = this.config.safetySettings;
         let sentCount = 0;
 
-        // Güvenli mesaj gönderme fonksiyonu
+        // Güvenli mesaj gönderme fonksiyonu - Store API kullanarak
         const sendMessageSafe = async (number, message) => {
             const chatId = `${number}@c.us`;
 
             // Önce numaranın WhatsApp'ta kayıtlı olup olmadığını kontrol et
+            let isRegistered = true;
             try {
                 const numberId = await this.client.getNumberId(number);
                 if (!numberId) {
@@ -353,23 +354,82 @@ class WhatsAppSession {
                     return { success: false, reason: 'not_registered' };
                 }
             } catch (e) {
-                this.log(`⚠️ Numara kontrolü başarısız: ${number} - ${e.message}`, 'warning');
+                // Kontrol başarısız olsa bile devam et
+                this.log(`⚠️ Numara kontrolü atlandı: ${number}`, 'info');
             }
 
-            // Puppeteer üzerinden doğrudan mesaj gönderme (markedUnread bypass)
+            // Yöntem 1: Store.Chat API üzerinden doğrudan mesaj gönderme
             try {
                 const page = this.client.pupPage;
                 if (page) {
-                    // WhatsApp Web API'sini doğrudan kullan
-                    const result = await page.evaluate(async (chatId, message) => {
+                    const result = await page.evaluate(async (chatId, messageText) => {
                         try {
-                            // Chat'i bul veya oluştur
-                            const chat = await window.WWebJS.getChat(chatId);
-                            if (chat) {
-                                await chat.sendMessage(message);
+                            // WhatsApp Web Store API'sine erişim
+                            const Store = window.Store || window.mR;
+
+                            if (!Store || !Store.Chat) {
+                                return { success: false, error: 'Store API bulunamadı' };
+                            }
+
+                            // Chat'i Store'dan bul veya oluştur
+                            let chat = Store.Chat.get(chatId);
+
+                            if (!chat) {
+                                // Yeni chat oluştur
+                                const wid = Store.WidFactory.createWid(chatId);
+                                chat = await Store.Chat.find(wid);
+                            }
+
+                            if (!chat) {
+                                return { success: false, error: 'Chat oluşturulamadı' };
+                            }
+
+                            // Mesajı gönder - doğrudan Store.SendMessage kullan
+                            if (Store.SendMessage) {
+                                await Store.SendMessage.sendTextMsgToChat(chat, messageText);
+                                return { success: true, method: 'SendMessage' };
+                            }
+
+                            // Alternatif: Chat.sendMessage
+                            if (chat.sendMessage) {
+                                await chat.sendMessage(messageText);
+                                return { success: true, method: 'chat.sendMessage' };
+                            }
+
+                            // Alternatif: composeAndSendTextMsg
+                            if (Store.ComposeBox && Store.ComposeBox.composeAndSendTextMsg) {
+                                await Store.ComposeBox.composeAndSendTextMsg(chat, messageText);
+                                return { success: true, method: 'ComposeBox' };
+                            }
+
+                            return { success: false, error: 'Mesaj gönderme yöntemi bulunamadı' };
+                        } catch (err) {
+                            return { success: false, error: err.message || String(err) };
+                        }
+                    }, chatId, message);
+
+                    if (result.success) {
+                        this.log(`📨 Store API ile gönderildi (${result.method})`, 'info');
+                        return { success: true };
+                    }
+
+                    this.log(`Store API başarısız: ${result.error}`, 'warning');
+                }
+            } catch (storeError) {
+                this.log(`Store API hatası: ${storeError.message}`, 'warning');
+            }
+
+            // Yöntem 2: WWebJS.sendMessage kullan
+            try {
+                const page = this.client.pupPage;
+                if (page) {
+                    const result = await page.evaluate(async (chatId, messageText) => {
+                        try {
+                            if (window.WWebJS && window.WWebJS.sendMessage) {
+                                await window.WWebJS.sendMessage(chatId, messageText);
                                 return { success: true };
                             }
-                            return { success: false, error: 'Chat bulunamadı' };
+                            return { success: false, error: 'WWebJS.sendMessage bulunamadı' };
                         } catch (err) {
                             return { success: false, error: err.message || String(err) };
                         }
@@ -378,41 +438,17 @@ class WhatsAppSession {
                     if (result.success) {
                         return { success: true };
                     }
-
-                    // Puppeteer yöntemi başarısız olduysa, standart yöntemi dene
-                    this.log(`Puppeteer yöntemi başarısız, standart yöntem deneniyor...`, 'info');
                 }
-            } catch (puppeteerError) {
-                this.log(`Puppeteer hatası: ${puppeteerError.message}`, 'warning');
+            } catch (wwebjsError) {
+                this.log(`WWebJS hatası: ${wwebjsError.message}`, 'warning');
             }
 
-            // Standart sendMessage - son çare
+            // Yöntem 3: Standart client.sendMessage (son çare)
             try {
                 await this.client.sendMessage(chatId, message);
                 return { success: true };
             } catch (error) {
                 const errMsg = error.message || String(error);
-
-                // markedUnread hatası için alternatif yöntem
-                if (errMsg.includes('markedUnread') || errMsg.includes('undefined')) {
-                    try {
-                        // 3 saniye bekle ve tekrar dene
-                        await new Promise(r => setTimeout(r, 3000));
-
-                        // Chat oluştur ve mesaj gönder
-                        const contact = await this.client.getContactById(chatId);
-                        if (contact) {
-                            const chat = await contact.getChat();
-                            if (chat) {
-                                await chat.sendMessage(message);
-                                return { success: true };
-                            }
-                        }
-                    } catch (retryError) {
-                        return { success: false, error: errMsg };
-                    }
-                }
-
                 return { success: false, error: errMsg };
             }
         };
