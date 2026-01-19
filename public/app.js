@@ -639,3 +639,28 @@ function showNotification(message, type) {
     };
     addLog(logEntry);
 }
+
+// WhatsApp'ı yeniden başlat
+async function restartWhatsApp() {
+    if (!confirm('WhatsApp bağlantısı yeniden başlatılacak. Devam edilsin mi?')) {
+        return;
+    }
+
+    try {
+        const qrContent = document.getElementById('qrContent');
+        qrContent.innerHTML = `
+            <div class="loading show">
+                <div class="spinner"></div>
+                <p style="margin-top: 20px; color: #666;">WhatsApp yeniden başlatılıyor...</p>
+            </div>
+        `;
+
+        const response = await axios.post('/api/restart');
+
+        if (response.data.success) {
+            showNotification('WhatsApp yeniden başlatıldı, QR kod bekleniyor...', 'success');
+        }
+    } catch (error) {
+        showNotification(`Yeniden başlatma hatası: ${error.response?.data?.error || error.message}`, 'error');
+    }
+}

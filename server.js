@@ -624,6 +624,36 @@ app.get('/api/logs', (req, res) => {
     res.json(logs);
 });
 
+// WhatsApp Client'ı yeniden başlat
+app.post('/api/restart', async (req, res) => {
+    try {
+        log('WhatsApp Client yeniden başlatılıyor...', 'info');
+
+        if (client) {
+            try {
+                await client.destroy();
+            } catch (e) {
+                log(`Client destroy hatası: ${e.message}`, 'warning');
+            }
+            client = null;
+        }
+
+        isClientReady = false;
+        qrCodeData = null;
+
+        // Kısa bir bekleme
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Yeniden başlat
+        initializeWhatsAppClient();
+
+        res.json({ success: true, message: 'WhatsApp Client yeniden başlatıldı' });
+    } catch (error) {
+        log(`Restart hatası: ${error.message}`, 'error');
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 // Grup oluştur
 app.post('/api/group/create', async (req, res) => {
     try {
