@@ -48,11 +48,8 @@ RUN npm ci --omit=dev
 # Uygulama dosyalarını kopyala
 COPY . .
 
-# config.json için yazma izni
-RUN chmod 666 config.json || true
-
-# .wwebjs_auth dizini oluştur
-RUN mkdir -p .wwebjs_auth && chmod 777 .wwebjs_auth
+# Sessions dizini oluştur
+RUN mkdir -p sessions && chmod 777 sessions
 
 # Port (Railway otomatik set eder)
 EXPOSE 3000

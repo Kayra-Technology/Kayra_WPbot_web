@@ -1,79 +1,116 @@
-// Socket.IO bağlantısı
-const socket = io();
-
-// Global state
+// Session yönetimi
+let sessionId = localStorage.getItem('whatsapp_session_id');
+let socket = null;
 let config = {};
 let isReady = false;
 
-// Socket olayları
-socket.on('connect', () => {
-    console.log('Socket.IO bağlantısı kuruldu');
-    loadInitialData();
-});
-
-socket.on('status', (status) => {
-    isReady = status.isReady;
-    updateStatusBadge(status.isReady);
-    updateDashboard(status);
-
-    if (status.hasQR && status.qrCode) {
-        displayQRCode(status.qrCode);
+// Axios interceptor - her isteğe session ID ekle
+axios.interceptors.request.use(config => {
+    if (sessionId) {
+        config.headers['X-Session-ID'] = sessionId;
     }
+    return config;
 });
 
-socket.on('qr', (qrCode) => {
-    displayQRCode(qrCode);
-});
+// Session başlat
+async function initSession() {
+    if (!sessionId) {
+        // Yeni session oluştur
+        try {
+            const response = await axios.post('/api/session/create');
+            sessionId = response.data.sessionId;
+            localStorage.setItem('whatsapp_session_id', sessionId);
+            console.log('Yeni session oluşturuldu:', sessionId);
+        } catch (error) {
+            console.error('Session oluşturma hatası:', error);
+            showNotification('Session oluşturulamadı', 'error');
+            return;
+        }
+    }
 
-socket.on('ready', (info) => {
-    isReady = true;
-    updateStatusBadge(true);
-    displayBotInfo(info);
-    hideQRCode();
-    loadGroups();
-});
+    // Socket.IO bağlantısı
+    initSocket();
+}
 
-socket.on('authenticated', () => {
-    showNotification('Kimlik doğrulama başarılı!', 'success');
-});
+// Socket.IO başlat
+function initSocket() {
+    socket = io();
 
-socket.on('auth_failure', (msg) => {
-    showNotification(`Kimlik doğrulama hatası: ${msg}`, 'error');
-});
+    socket.on('connect', () => {
+        console.log('Socket.IO bağlantısı kuruldu');
+        // Session'a katıl
+        socket.emit('join-session', sessionId);
+        loadInitialData();
+    });
 
-socket.on('disconnected', (reason) => {
-    isReady = false;
-    updateStatusBadge(false);
-    showNotification(`Bağlantı kesildi: ${reason}`, 'error');
-});
+    socket.on('status', (status) => {
+        isReady = status.isReady;
+        updateStatusBadge(status.isReady);
+        updateDashboard(status);
 
-socket.on('log', (logEntry) => {
-    addLog(logEntry);
-});
+        if (status.hasQR && status.qrCode) {
+            displayQRCode(status.qrCode);
+        }
+    });
 
-socket.on('logs', (logs) => {
-    logs.forEach(log => addLog(log));
-});
+    socket.on('qr', (qrCode) => {
+        displayQRCode(qrCode);
+    });
 
-socket.on('config', (newConfig) => {
-    config = newConfig;
-    updateUI();
-});
+    socket.on('ready', (info) => {
+        isReady = true;
+        updateStatusBadge(true);
+        displayBotInfo(info);
+        hideQRCode();
+        loadGroups();
+    });
 
-socket.on('config-updated', (newConfig) => {
-    config = newConfig;
-    updateUI();
-    showNotification('Ayarlar güncellendi', 'success');
-});
+    socket.on('authenticated', () => {
+        showNotification('Kimlik doğrulama başarılı!', 'success');
+    });
 
-socket.on('message', (msg) => {
-    const logEntry = {
-        timestamp: new Date().toLocaleString('tr-TR'),
-        message: `[${msg.isGroup ? msg.groupName : 'DM'}] ${msg.senderName}: ${msg.body}`,
-        type: 'info'
-    };
-    addLog(logEntry);
-});
+    socket.on('auth_failure', (msg) => {
+        showNotification(`Kimlik doğrulama hatası: ${msg}`, 'error');
+    });
+
+    socket.on('disconnected', (reason) => {
+        isReady = false;
+        updateStatusBadge(false);
+        showNotification(`Bağlantı kesildi: ${reason}`, 'error');
+    });
+
+    socket.on('log', (logEntry) => {
+        addLog(logEntry);
+    });
+
+    socket.on('logs', (logs) => {
+        logs.forEach(log => addLog(log));
+    });
+
+    socket.on('config', (newConfig) => {
+        config = newConfig;
+        updateUI();
+    });
+
+    socket.on('config-updated', (newConfig) => {
+        config = newConfig;
+        updateUI();
+    });
+
+    socket.on('message', (msg) => {
+        const logEntry = {
+            timestamp: new Date().toLocaleString('tr-TR'),
+            message: `[${msg.isGroup ? msg.groupName : 'DM'}] ${msg.senderName}: ${msg.body}`,
+            type: 'info'
+        };
+        addLog(logEntry);
+    });
+
+    socket.on('error', (error) => {
+        console.error('Socket error:', error);
+        showNotification(error.message || 'Bağlantı hatası', 'error');
+    });
+}
 
 // İlk veri yükleme
 async function loadInitialData() {
@@ -105,7 +142,12 @@ async function loadInitialData() {
         }
     } catch (error) {
         console.error('Veri yükleme hatası:', error);
-        showNotification('Veri yüklenirken hata oluştu', 'error');
+        // Session hatası ise yeni session oluştur
+        if (error.response?.status === 400) {
+            localStorage.removeItem('whatsapp_session_id');
+            sessionId = null;
+            initSession();
+        }
     }
 }
 
@@ -141,12 +183,14 @@ function updateStatusBadge(ready) {
 // Dashboard güncelle
 function updateDashboard(status) {
     const botStatusEl = document.getElementById('botStatus');
-    if (status.isReady) {
-        botStatusEl.textContent = 'Çevrimiçi';
-        botStatusEl.style.color = 'white';
-    } else {
-        botStatusEl.textContent = 'Çevrimdışı';
-        botStatusEl.style.color = 'white';
+    if (botStatusEl) {
+        if (status.isReady) {
+            botStatusEl.textContent = 'Çevrimiçi';
+            botStatusEl.style.color = 'white';
+        } else {
+            botStatusEl.textContent = 'Çevrimdışı';
+            botStatusEl.style.color = 'white';
+        }
     }
 }
 
@@ -191,6 +235,8 @@ function updateUI() {
 // Numara listesi güncelle
 function updateNumbersList() {
     const container = document.getElementById('numbersContainer');
+    if (!container) return;
+
     if (!config.inviteNumbers || config.inviteNumbers.length === 0) {
         container.innerHTML = '<div class="empty-state">Henüz numara eklenmemiş</div>';
         return;
@@ -275,13 +321,16 @@ async function addBulkNumbers() {
 function clearBulkInput() {
     document.getElementById('bulkNumbers').value = '';
     const alert = document.getElementById('bulkAlert');
-    alert.className = 'alert';
-    alert.textContent = '';
+    if (alert) {
+        alert.className = 'alert';
+        alert.textContent = '';
+    }
 }
 
 // Toplu numara alert göster
 function showBulkAlert(message, type) {
     const alert = document.getElementById('bulkAlert');
+    if (!alert) return;
     alert.className = `alert alert-${type === 'error' ? 'danger' : type === 'warning' ? 'warning' : 'success'} show`;
     alert.textContent = message;
     setTimeout(() => {
@@ -295,7 +344,6 @@ async function refreshStats() {
         const response = await axios.get('/api/invite-stats');
         const { stats } = response.data;
 
-        // Dashboard istatistikleri
         const dashToday = document.getElementById('dashTodayInvites');
         const dashRemaining = document.getElementById('dashRemainingLimit');
         const dashLimit = document.getElementById('dashDailyLimit');
@@ -304,7 +352,6 @@ async function refreshStats() {
         if (dashRemaining) dashRemaining.textContent = stats.remainingToday;
         if (dashLimit) dashLimit.textContent = stats.dailyLimit;
 
-        // Renk ayarları
         if (dashRemaining) {
             if (stats.remainingToday <= 0) {
                 dashRemaining.style.color = 'var(--danger)';
@@ -339,68 +386,59 @@ async function createGroupAndInvite() {
         return;
     }
 
-    if (!confirm(`"${groupName}" adlı grubu oluşturup davetleri göndermek istediğinize emin misiniz?\n\nİşlem süresi numaralara bağlı olarak uzun sürebilir.`)) {
+    if (!confirm(`"${groupName}" adlı grubu oluşturup davetleri göndermek istediğinize emin misiniz?`)) {
         return;
     }
 
     try {
-        showAlert('groupAlert', '⏳ 1/5 - Eski veriler temizleniyor...', 'info');
+        showAlert('groupAlert', '1/5 - Eski veriler temizleniyor...', 'info');
 
-        // 1. ÖNCELİKLE ESKİ NUMARALARI VE VERİLERİ TEMİZLE
         await axios.post('/api/config', {
             group: {
                 name: groupName,
-                groupId: '',  // Eski grupId'yi temizle
+                groupId: '',
                 inviteLink: ''
             },
-            inviteNumbers: [],  // Eski numaraları temizle
+            inviteNumbers: [],
             inviteHistory: {},
             inviteStats: { date: '', count: 0 }
         });
 
-        // Config'in güncellenmesini bekle
         await new Promise(resolve => setTimeout(resolve, 500));
 
-        showAlert('groupAlert', '⏳ 2/5 - Yeni numaralar ekleniyor...', 'info');
+        showAlert('groupAlert', '2/5 - Yeni numaralar ekleniyor...', 'info');
 
-        // 2. YENİ NUMARALARI EKLE
         const bulkResponse = await axios.post('/api/numbers/add-bulk', { numbers });
-        const { addedCount, totalProvided } = bulkResponse.data;
+        const { addedCount } = bulkResponse.data;
 
-        showAlert('groupAlert', `✓ ${addedCount} numara eklendi\\n⏳ 3/5 - Grup oluşturuluyor...`, 'info');
+        showAlert('groupAlert', `${addedCount} numara eklendi. 3/5 - Grup oluşturuluyor...`, 'info');
 
-        // Config güncellemesinin işlenmesini bekle
         await new Promise(resolve => setTimeout(resolve, 1000));
 
-        // 3. Config'i yenile
         let refreshedConfig = await axios.get('/api/config');
         config = refreshedConfig.data;
 
-        // 4. Grup oluştur (her zaman yeni grup)
-        showAlert('groupAlert', `⏳ 4/5 - Grup oluşturuluyor...\\nBu işlem 20-30 saniye sürebilir (WhatsApp senkronizasyonu).`, 'info');
+        showAlert('groupAlert', '4/5 - Grup oluşturuluyor... (20-30 saniye sürebilir)', 'info');
         await axios.post('/api/group/create');
         await new Promise(resolve => setTimeout(resolve, 3000));
 
-        // Config'i yenile (grup ID'sini güncellemek için)
         refreshedConfig = await axios.get('/api/config');
         config = refreshedConfig.data;
 
         if (!config.group?.groupId) {
-            throw new Error('Grup ID bulunamadı! Lütfen tekrar deneyin.');
+            throw new Error('Grup ID bulunamadı!');
         }
 
-        // 5. Davetleri gönder
-        showAlert('groupAlert', `🚀 5/5 - Davetler gönderiliyor...\\n\\n${addedCount} kişiye güvenli mod ile davet gönderilecek.\\nBu işlem birkaç dakika sürebilir.\\n\\n📊 İlerlemeyi \\"Loglar\\" sekmesinden takip edebilirsiniz.`, 'info');
+        showAlert('groupAlert', `5/5 - Davetler gönderiliyor... (${addedCount} kişiye)`, 'info');
 
         const inviteResponse = await axios.post('/api/group/send-invites');
 
         if (inviteResponse.data.success) {
-            showAlert('groupAlert', `✅ Tamamlandı!\n\nGrup "${groupName}" hazır ve davetler gönderildi.\n\n📋 Detaylar için "Loglar" sekmesine bakın.`, 'success');
+            showAlert('groupAlert', `Tamamlandı! Grup "${groupName}" hazır ve davetler gönderildi.`, 'success');
         } else {
-            showAlert('groupAlert', `⚠️ Davetler gönderilirken bir sorun oluştu.\n\nLütfen "Loglar" sekmesini kontrol edin.`, 'error');
+            showAlert('groupAlert', 'Davetler gönderilirken bir sorun oluştu.', 'error');
         }
 
-        // Formu temizle
         document.getElementById('groupName').value = '';
         document.getElementById('groupNumbers').value = '';
 
@@ -408,7 +446,7 @@ async function createGroupAndInvite() {
     } catch (error) {
         console.error('Hata detayı:', error);
         const errorMsg = error.response?.data?.error || error.message || 'Bilinmeyen hata';
-        showAlert('groupAlert', `❌ Hata oluştu:\n\n${errorMsg}\n\nDetaylar için tarayıcı konsolunu ve Loglar sekmesini kontrol edin.`, 'error');
+        showAlert('groupAlert', `Hata oluştu: ${errorMsg}`, 'error');
     }
 }
 
@@ -419,12 +457,12 @@ async function createGroup() {
         return;
     }
 
-    if (!confirm('IDA Grubu oluşturmak istediğinize emin misiniz?')) {
+    if (!confirm('Grup oluşturmak istediğinize emin misiniz?')) {
         return;
     }
 
     try {
-        const res = await axios.post('/api/group/create');
+        await axios.post('/api/group/create');
         showAlert('groupAlert', 'Grup başarıyla oluşturuldu!', 'success');
         loadGroups();
     } catch (error) {
@@ -506,21 +544,24 @@ async function loadGroups() {
     try {
         const res = await axios.get('/api/groups');
         const groupsList = document.getElementById('groupsList');
+        const totalGroups = document.getElementById('totalGroups');
 
         if (!res.data.groups || res.data.groups.length === 0) {
-            groupsList.innerHTML = '<div class="empty-state">Henüz grup bulunmuyor</div>';
-            document.getElementById('totalGroups').textContent = '0';
+            if (groupsList) groupsList.innerHTML = '<div class="empty-state">Henüz grup bulunmuyor</div>';
+            if (totalGroups) totalGroups.textContent = '0';
             return;
         }
 
-        document.getElementById('totalGroups').textContent = res.data.groups.length;
-        groupsList.innerHTML = res.data.groups.map(group => `
-            <div class="group-item">
-                <h4>${group.name}</h4>
-                <p>Katılımcı: ${group.participants}</p>
-                <p style="font-size: 12px; color: #999; margin-top: 5px;">${group.id}</p>
-            </div>
-        `).join('');
+        if (totalGroups) totalGroups.textContent = res.data.groups.length;
+        if (groupsList) {
+            groupsList.innerHTML = res.data.groups.map(group => `
+                <div class="group-item">
+                    <h4>${group.name}</h4>
+                    <p>Katılımcı: ${group.participants}</p>
+                    <p style="font-size: 12px; color: #999; margin-top: 5px;">${group.id}</p>
+                </div>
+            `).join('');
+        }
     } catch (error) {
         console.error('Gruplar yüklenirken hata:', error);
     }
@@ -541,11 +582,9 @@ async function sendMessage() {
         return;
     }
 
-    // Birden fazla numara kontrolü
     const numbers = recipient.split(',').map(n => n.trim()).filter(n => n);
 
     if (numbers.length > 1) {
-        // Toplu mesaj
         if (!confirm(`${numbers.length} kişiye mesaj gönderilecek. Devam edilsin mi?`)) {
             return;
         }
@@ -559,7 +598,6 @@ async function sendMessage() {
             showAlert('messageAlert', `Mesaj gönderilirken hata: ${error.response?.data?.error || error.message}`, 'error');
         }
     } else {
-        // Tekil mesaj
         try {
             await axios.post('/api/message/send', { to: numbers[0], message });
             showAlert('messageAlert', 'Mesaj başarıyla gönderildi!', 'success');
@@ -570,47 +608,17 @@ async function sendMessage() {
     }
 }
 
-// Zamanlama inputlarını güncelle
-function updateScheduleInputs() {
-    if (!config.schedule) return;
-
-    document.getElementById('inviteDay').value = config.schedule.inviteDay;
-    document.getElementById('inviteHour').value = config.schedule.inviteHour;
-    document.getElementById('inviteMinute').value = config.schedule.inviteMinute;
-    document.getElementById('cleanupDay').value = config.schedule.cleanupDay;
-    document.getElementById('cleanupHour').value = config.schedule.cleanupHour;
-    document.getElementById('cleanupMinute').value = config.schedule.cleanupMinute;
-}
-
-// Zamanlamayı güncelle
-async function updateSchedule() {
-    const schedule = {
-        inviteDay: parseInt(document.getElementById('inviteDay').value),
-        inviteHour: parseInt(document.getElementById('inviteHour').value),
-        inviteMinute: parseInt(document.getElementById('inviteMinute').value),
-        cleanupDay: parseInt(document.getElementById('cleanupDay').value),
-        cleanupHour: parseInt(document.getElementById('cleanupHour').value),
-        cleanupMinute: parseInt(document.getElementById('cleanupMinute').value)
-    };
-
-    try {
-        await axios.post('/api/schedule/update', schedule);
-        showAlert('scheduleAlert', 'Zamanlama ayarları güncellendi!', 'success');
-    } catch (error) {
-        showAlert('scheduleAlert', `Güncelleme hatası: ${error.response?.data?.error || error.message}`, 'error');
-    }
-}
-
 // Log ekle
 function addLog(logEntry) {
     const container = document.getElementById('logContainer');
+    if (!container) return;
+
     const logEl = document.createElement('div');
     logEl.className = `log-entry ${logEntry.type}`;
     logEl.textContent = `[${logEntry.timestamp}] ${logEntry.message}`;
     container.appendChild(logEl);
     container.scrollTop = container.scrollHeight;
 
-    // Maksimum 100 log tut
     while (container.children.length > 100) {
         container.removeChild(container.firstChild);
     }
@@ -619,11 +627,12 @@ function addLog(logEntry) {
 // Alert göster
 function showAlert(elementId, message, type) {
     const alert = document.getElementById(elementId);
+    if (!alert) return;
+
     const alertClass = type === 'info' ? 'alert-warning' : `alert-${type === 'error' ? 'danger' : type}`;
     alert.className = `alert ${alertClass} show`;
     alert.textContent = message;
 
-    // Info mesajları 10 saniye göster, diğerleri 5 saniye
     const timeout = type === 'info' ? 10000 : 5000;
     setTimeout(() => {
         alert.classList.remove('show');
@@ -664,3 +673,25 @@ async function restartWhatsApp() {
         showNotification(`Yeniden başlatma hatası: ${error.response?.data?.error || error.message}`, 'error');
     }
 }
+
+// Yeni session başlat (mevcut session'ı sil)
+async function newSession() {
+    if (!confirm('Mevcut oturum silinecek ve yeni oturum başlatılacak. Devam edilsin mi?')) {
+        return;
+    }
+
+    localStorage.removeItem('whatsapp_session_id');
+    sessionId = null;
+
+    if (socket) {
+        socket.disconnect();
+    }
+
+    // Sayfayı yenile
+    window.location.reload();
+}
+
+// Sayfa yüklendiğinde session başlat
+document.addEventListener('DOMContentLoaded', () => {
+    initSession();
+});
