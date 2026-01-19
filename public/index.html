@@ -446,7 +446,16 @@
                 </svg>
                 <span><span class="brand-kayra">Kayra Robotik Teknoloji</span> - WhatsApp Bot Yönetim</span>
             </h1>
-            <span class="status-badge" id="statusBadge">Bağlanıyor...</span>
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <span class="status-badge" id="statusBadge">Bağlanıyor...</span>
+                <button onclick="newSession()" style="background: #6c757d; color: white; border: none; padding: 8px 12px; border-radius: 5px; cursor: pointer; font-size: 12px;" title="Yeni oturum başlat">
+                    Yeni Oturum
+                </button>
+            </div>
+        </div>
+        <div style="background: #e9ecef; padding: 8px 15px; border-radius: 8px; margin-bottom: 20px; font-size: 12px; color: #666;">
+            <strong>Oturum ID:</strong> <span id="sessionIdDisplay">Yükleniyor...</span>
+            <span style="margin-left: 15px; color: #999;">(Her tarayıcı/cihaz için ayrı WhatsApp bağlantısı)</span>
         </div>
 
         <div class="tabs">

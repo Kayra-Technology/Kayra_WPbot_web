@@ -147,14 +147,14 @@ class WhatsAppSession {
                 width: 400,
                 margin: 1
             })
-            .then((dataUrl) => {
-                this.qrCodeData = dataUrl;
-                this.log('QR Kodu başarıyla oluşturuldu', 'success');
-                this.emitToSession('qr', this.qrCodeData);
-            })
-            .catch((err) => {
-                this.log(`QR Kodu oluşturma hatası: ${err.message}`, 'error');
-            });
+                .then((dataUrl) => {
+                    this.qrCodeData = dataUrl;
+                    this.log('QR Kodu başarıyla oluşturuldu', 'success');
+                    this.emitToSession('qr', this.qrCodeData);
+                })
+                .catch((err) => {
+                    this.log(`QR Kodu oluşturma hatası: ${err.message}`, 'error');
+                });
         });
 
         // Bağlantı hazır
@@ -341,7 +341,64 @@ class WhatsAppSession {
         const safetySettings = this.config.safetySettings;
         let sentCount = 0;
 
+        // Mesaj gönderme yardımcı fonksiyonu (retry ile)
+        const sendMessageWithRetry = async (chatId, message, maxRetries = 3) => {
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                try {
+                    // Önce sohbeti kontrol et
+                    let chat;
+                    try {
+                        chat = await this.client.getChatById(chatId);
+                    } catch (chatError) {
+                        // Yeni sohbet başlatmayı dene
+                        this.log(`Sohbet bulunamadı, yeni mesaj gönderiliyor: ${chatId}`, 'info');
+                    }
+
+                    // Mesajı gönder
+                    await this.client.sendMessage(chatId, message);
+                    return true;
+                } catch (error) {
+                    const errorMessage = error.message || String(error);
+
+                    // markedUnread hatası - bilinen whatsapp-web.js sorunu
+                    if (errorMessage.includes('markedUnread') || errorMessage.includes('Cannot read properties of undefined')) {
+                        this.log(`markedUnread hatası, tekrar deneniyor (${attempt}/${maxRetries})...`, 'warning');
+
+                        // Kısa bekleme
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+
+                        if (attempt === maxRetries) {
+                            // Son denemede farklı yöntem dene
+                            try {
+                                const contact = await this.client.getContactById(chatId);
+                                if (contact) {
+                                    await this.client.sendMessage(chatId, message);
+                                    return true;
+                                }
+                            } catch (e) {
+                                throw new Error(`Mesaj gönderilemedi: ${errorMessage}`);
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Diğer hatalar
+                    if (attempt === maxRetries) {
+                        throw error;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                }
+            }
+            return false;
+        };
+
         for (const number of this.config.inviteNumbers) {
+            // Numara format kontrolü
+            if (!number || number.length < 10) {
+                this.log(`Geçersiz numara atlandı: ${number}`, 'warning');
+                continue;
+            }
+
             // Günlük limit kontrolü
             const today = new Date().toISOString().split('T')[0];
             if (this.config.inviteStats.date !== today) {
@@ -358,23 +415,25 @@ class WhatsAppSession {
                     ? messageTemplates[Math.floor(Math.random() * messageTemplates.length)]
                     : messageTemplates[0];
 
-                await this.client.sendMessage(chatId, message);
+                const success = await sendMessageWithRetry(chatId, message);
 
-                // Kayıt
-                this.config.inviteHistory[number] = {
-                    lastInvite: new Date().toISOString(),
-                    count: (this.config.inviteHistory[number]?.count || 0) + 1
-                };
-                this.config.inviteStats.count++;
-                sentCount++;
+                if (success) {
+                    // Kayıt
+                    this.config.inviteHistory[number] = {
+                        lastInvite: new Date().toISOString(),
+                        count: (this.config.inviteHistory[number]?.count || 0) + 1
+                    };
+                    this.config.inviteStats.count++;
+                    sentCount++;
 
-                this.log(`Davet gönderildi (${sentCount}/${this.config.inviteNumbers.length}): ${number}`, 'success');
+                    this.log(`✓ Davet gönderildi (${sentCount}/${this.config.inviteNumbers.length}): ${number}`, 'success');
+                }
 
                 // Gecikme
                 const delay = Math.floor(Math.random() * (safetySettings.maxDelay - safetySettings.minDelay + 1)) + safetySettings.minDelay;
                 await new Promise(resolve => setTimeout(resolve, delay));
             } catch (error) {
-                this.log(`Davet hatası (${number}): ${error.message}`, 'error');
+                this.log(`✗ Davet hatası (${number}): ${error.message}`, 'error');
                 await new Promise(resolve => setTimeout(resolve, 10000));
             }
         }

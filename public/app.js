@@ -5,15 +5,18 @@ let config = {};
 let isReady = false;
 
 // Axios interceptor - her isteğe session ID ekle
-axios.interceptors.request.use(config => {
+axios.interceptors.request.use(reqConfig => {
     if (sessionId) {
-        config.headers['X-Session-ID'] = sessionId;
+        reqConfig.headers['X-Session-ID'] = sessionId;
     }
-    return config;
+    console.log(`[API] ${reqConfig.method?.toUpperCase()} ${reqConfig.url} - Session: ${sessionId?.substring(0, 8)}...`);
+    return reqConfig;
 });
 
 // Session başlat
 async function initSession() {
+    console.log('initSession başlatılıyor, mevcut sessionId:', sessionId);
+
     if (!sessionId) {
         // Yeni session oluştur
         try {
@@ -26,10 +29,30 @@ async function initSession() {
             showNotification('Session oluşturulamadı', 'error');
             return;
         }
+    } else {
+        console.log('Mevcut session kullanılıyor:', sessionId);
     }
+
+    // Session ID'yi header'da göster (debug için)
+    updateSessionDisplay();
 
     // Socket.IO bağlantısı
     initSocket();
+}
+
+// Session ID'yi ekranda göster
+function updateSessionDisplay() {
+    const badge = document.getElementById('statusBadge');
+    const sessionDisplay = document.getElementById('sessionIdDisplay');
+
+    if (badge && sessionId) {
+        badge.title = `Session: ${sessionId}`;
+    }
+
+    if (sessionDisplay && sessionId) {
+        sessionDisplay.textContent = sessionId.substring(0, 16) + '...';
+        sessionDisplay.title = sessionId;
+    }
 }
 
 // Socket.IO başlat

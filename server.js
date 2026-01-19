@@ -234,6 +234,91 @@ app.post('/api/numbers/add', (req, res) => {
     }
 });
 
+// Numara formatını düzelt - Gelişmiş versiyon
+function formatPhoneNumber(num) {
+    if (!num) return null;
+
+    // String'e çevir ve boşlukları temizle
+    let original = String(num).trim();
+    let cleaned = original;
+
+    // Tüm özel karakterleri temizle (boşluk, tire, parantez, nokta, artı)
+    cleaned = cleaned.replace(/[\s\-\(\)\.\+\/\\]/g, '');
+
+    // Sadece rakamları al
+    cleaned = cleaned.replace(/\D/g, '');
+
+    if (cleaned.length === 0) {
+        console.log(`[formatPhoneNumber] Geçersiz numara (boş): "${original}"`);
+        return null;
+    }
+
+    // Türkiye numarası formatları:
+    // 05321234567 -> 905321234567 (11 hane, 0 ile başlıyor)
+    // 5321234567 -> 905321234567 (10 hane, 5 ile başlıyor)
+    // 905321234567 -> 905321234567 (12 hane, 90 ile başlıyor)
+    // 00905321234567 -> 905321234567 (14 hane, 0090 ile başlıyor)
+    // +905321234567 -> 905321234567 (+ temizlendikten sonra 12 hane)
+
+    // Başındaki 00'ları kaldır (uluslararası format)
+    if (cleaned.startsWith('00')) {
+        cleaned = cleaned.substring(2);
+    }
+
+    // 0 ile başlayan Türkiye numaraları
+    if (cleaned.startsWith('0')) {
+        // 05XX, 053X, 054X, 055X formatları (GSM)
+        if (cleaned.length === 11 && /^0[5][0-9]{9}$/.test(cleaned)) {
+            cleaned = '9' + cleaned; // 05xx -> 905xx
+        }
+        // Sabit hat: 0212, 0312, 0232 vb.
+        else if (cleaned.length === 11 && /^0[2-4][0-9]{9}$/.test(cleaned)) {
+            cleaned = '9' + cleaned; // 0212xxx -> 90212xxx
+        }
+        // Tek 0 varsa ve 10 haneden kısaysa
+        else if (cleaned.length === 10 && cleaned.startsWith('0')) {
+            // 05XXXXXXXX formatı
+            cleaned = '9' + cleaned;
+        }
+    }
+
+    // 5 ile başlayan 10 haneli numaralar (ülke kodu olmadan GSM)
+    if (cleaned.startsWith('5') && cleaned.length === 10) {
+        cleaned = '90' + cleaned;
+    }
+
+    // 2, 3, 4 ile başlayan 10 haneli numaralar (ülke kodu olmadan sabit hat)
+    if (/^[234]/.test(cleaned) && cleaned.length === 10) {
+        cleaned = '90' + cleaned;
+    }
+
+    // Türkiye numarası kontrolü (90 ile başlamalı, 12 hane olmalı)
+    if (cleaned.startsWith('90') && cleaned.length === 12) {
+        console.log(`[formatPhoneNumber] Türkiye numarası: "${original}" -> "${cleaned}"`);
+        return cleaned;
+    }
+
+    // Diğer ülke numaraları için (en az 10, en fazla 15 hane)
+    if (cleaned.length >= 10 && cleaned.length <= 15) {
+        // Eğer ülke kodu ile başlamıyorsa, Türkiye için 90 ekle
+        if (!cleaned.startsWith('90') && !cleaned.startsWith('1') && 
+            !cleaned.startsWith('44') && !cleaned.startsWith('49') && 
+            !cleaned.startsWith('33') && !cleaned.startsWith('39')) {
+            // Bilinmeyen format - Türkiye varsayalım
+            if (cleaned.length === 10) {
+                cleaned = '90' + cleaned;
+                console.log(`[formatPhoneNumber] 90 eklendi: "${original}" -> "${cleaned}"`);
+                return cleaned;
+            }
+        }
+        console.log(`[formatPhoneNumber] Uluslararası numara: "${original}" -> "${cleaned}"`);
+        return cleaned;
+    }
+
+    console.log(`[formatPhoneNumber] Geçersiz numara format: "${original}" (${cleaned.length} hane)`);
+    return null;
+}
+
 // Toplu numara ekle
 app.post('/api/numbers/add-bulk', (req, res) => {
     const session = getSessionFromRequest(req);
@@ -247,20 +332,24 @@ app.post('/api/numbers/add-bulk', (req, res) => {
         if (Array.isArray(numbers)) {
             numberList = numbers;
         } else if (typeof numbers === 'string') {
+            // Çeşitli ayırıcıları destekle
             numberList = numbers
-                .split(/[\n,;]+/)
+                .split(/[\n\r,;|\t]+/)
                 .map(n => n.trim())
                 .filter(n => n.length > 0);
         }
 
-        const validNumbers = numberList.map(num => {
-            num = num.replace(/^\+/, '').replace(/^00/, '');
-            num = num.replace(/\D/g, '');
-            if (num.startsWith('5') && num.length === 10) {
-                num = '90' + num;
+        const validNumbers = [];
+        const invalidNumbers = [];
+
+        numberList.forEach(num => {
+            const formatted = formatPhoneNumber(num);
+            if (formatted) {
+                validNumbers.push(formatted);
+            } else if (num.trim()) {
+                invalidNumbers.push(num);
             }
-            return num;
-        }).filter(num => num.length >= 10);
+        });
 
         const uniqueNumbers = [...new Set(validNumbers)];
         let addedCount = 0;
@@ -273,12 +362,19 @@ app.post('/api/numbers/add-bulk', (req, res) => {
         });
 
         session.saveConfig();
-        session.log(`${addedCount} yeni numara eklendi`, 'success');
+
+        if (invalidNumbers.length > 0) {
+            session.log(`${addedCount} numara eklendi, ${invalidNumbers.length} geçersiz numara atlandı`, 'warning');
+        } else {
+            session.log(`${addedCount} yeni numara eklendi`, 'success');
+        }
 
         res.json({
             success: true,
             addedCount,
             totalProvided: uniqueNumbers.length,
+            invalidCount: invalidNumbers.length,
+            invalidNumbers: invalidNumbers.slice(0, 5), // İlk 5 geçersiz numarayı göster
             numbers: session.config.inviteNumbers
         });
     } catch (error) {
@@ -336,6 +432,9 @@ app.get('/api/invite-stats', (req, res) => {
 io.on('connection', (socket) => {
     console.log(`Yeni socket bağlantısı: ${socket.id}`);
 
+    // Her socket için session ID'yi sakla
+    socket.sessionId = null;
+
     // Session'a katıl
     socket.on('join-session', (sessionId) => {
         if (!sessionId) {
@@ -343,14 +442,25 @@ io.on('connection', (socket) => {
             return;
         }
 
+        // Önceki session'dan çık
+        if (socket.sessionId && socket.sessionId !== sessionId) {
+            socket.leave(socket.sessionId);
+            console.log(`Socket ${socket.id} eski session'dan çıktı: ${socket.sessionId}`);
+        }
+
+        socket.sessionId = sessionId;
         socket.join(sessionId);
         console.log(`Socket ${socket.id} session'a katıldı: ${sessionId}`);
+        console.log(`Aktif session sayısı: ${SessionManager.getAll().length}`);
 
         // Session'ı al veya oluştur
         const session = SessionManager.getOrCreate(sessionId, io);
 
-        // Mevcut durumu gönder
-        socket.emit('status', session.getStatus());
+        // Mevcut durumu gönder - sadece bu session'a ait bilgiler
+        const status = session.getStatus();
+        console.log(`Session ${sessionId.substring(0, 8)}... durumu: isReady=${status.isReady}, hasQR=${status.hasQR}`);
+
+        socket.emit('status', status);
 
         if (session.qrCodeData && !session.isReady) {
             socket.emit('qr', session.qrCodeData);
@@ -361,7 +471,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
-        console.log(`Socket bağlantısı koptu: ${socket.id}`);
+        console.log(`Socket bağlantısı koptu: ${socket.id}, session: ${socket.sessionId}`);
     });
 });
 
