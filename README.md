@@ -152,14 +152,14 @@ npm start
 
 ```
 Kayra_WPbot_web/
-├── server.js           # Ana sunucu dosyası
+├── server.js           # Express sunucu ve API
 ├── sessionManager.js   # WhatsApp session yönetimi
 ├── package.json        # Bağımlılıklar
-├── public/             # Frontend dosyaları
-│   ├── index.html      # Ana sayfa
-│   ├── style.css       # Stiller
-│   └── script.js       # Frontend JavaScript
-└── sessions/           # Session verileri (otomatik oluşturulur)
+├── Dockerfile          # Docker konfigürasyonu
+├── public/
+│   ├── index.html      # Frontend HTML
+│   └── app.js          # Frontend JavaScript
+└── sessions/           # Session verileri (gitignore)
 ```
 
 ## ⚠️ Önemli Notlar

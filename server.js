@@ -4,7 +4,16 @@ const socketIO = require('socket.io');
 const cors = require('cors');
 const path = require('path');
 const crypto = require('crypto');
-const { SessionManager } = require('./sessionManager');
+const { SessionManager, CONFIG } = require('./sessionManager');
+
+// ============== SERVER CONFIG ==============
+const SERVER_CONFIG = {
+    PORT: process.env.PORT || 3000,
+    RATE_LIMIT_WINDOW: 60000,           // 1 dakika
+    RATE_LIMIT_MAX_REQUESTS: 100,       // Dakikada max istek
+    BODY_SIZE_LIMIT: '1mb',
+    TRUST_PROXY: process.env.NODE_ENV === 'production'
+};
 
 // Express uygulaması
 const app = express();
@@ -13,17 +22,90 @@ const io = socketIO(server, {
     cors: {
         origin: '*',
         methods: ['GET', 'POST']
-    }
+    },
+    pingTimeout: 60000,
+    pingInterval: 25000
 });
 
-// Middleware
+// ============== RATE LIMITING ==============
+const rateLimitMap = new Map();
+
+function rateLimit(req, res, next) {
+    const ip = req.ip || req.connection.remoteAddress;
+    const now = Date.now();
+
+    if (!rateLimitMap.has(ip)) {
+        rateLimitMap.set(ip, { count: 1, resetTime: now + SERVER_CONFIG.RATE_LIMIT_WINDOW });
+        return next();
+    }
+
+    const record = rateLimitMap.get(ip);
+
+    if (now > record.resetTime) {
+        record.count = 1;
+        record.resetTime = now + SERVER_CONFIG.RATE_LIMIT_WINDOW;
+        return next();
+    }
+
+    if (record.count >= SERVER_CONFIG.RATE_LIMIT_MAX_REQUESTS) {
+        return res.status(429).json({
+            success: false,
+            error: 'Çok fazla istek. Lütfen biraz bekleyin.'
+        });
+    }
+
+    record.count++;
+    next();
+}
+
+// Rate limit temizliği
+setInterval(() => {
+    const now = Date.now();
+    for (const [ip, record] of rateLimitMap) {
+        if (now > record.resetTime) {
+            rateLimitMap.delete(ip);
+        }
+    }
+}, 60000);
+
+// ============== MIDDLEWARE ==============
+if (SERVER_CONFIG.TRUST_PROXY) {
+    app.set('trust proxy', 1);
+}
+
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: SERVER_CONFIG.BODY_SIZE_LIMIT }));
 app.use(express.static(path.join(__dirname, 'public')));
+app.use('/api/', rateLimit);
 
 // Session ID oluştur
 function generateSessionId() {
     return crypto.randomBytes(16).toString('hex');
+}
+
+// ============== INPUT VALIDATION ==============
+
+function validateSessionId(sessionId) {
+    if (!sessionId || typeof sessionId !== 'string') return false;
+    // 32 karakter hex string
+    return /^[a-f0-9]{32}$/i.test(sessionId);
+}
+
+function validateGroupName(name) {
+    if (!name || typeof name !== 'string') return false;
+    const trimmed = name.trim();
+    return trimmed.length >= 1 && trimmed.length <= 100;
+}
+
+function validatePhoneNumber(number) {
+    if (!number) return false;
+    const cleaned = String(number).replace(/\D/g, '');
+    return cleaned.length >= 10 && cleaned.length <= 15;
+}
+
+function validateMessage(message) {
+    if (!message || typeof message !== 'string') return false;
+    return message.trim().length > 0 && message.length <= 4096;
 }
 
 // Session middleware - API istekleri için
@@ -34,6 +116,36 @@ function getSessionFromRequest(req) {
     }
     return SessionManager.get(sessionId);
 }
+
+// ============== HEALTH & STATS ==============
+
+// Health check endpoint (Railway için)
+app.get('/health', (req, res) => {
+    const stats = SessionManager.getStats();
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        memory: {
+            used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+            total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
+        },
+        sessions: stats
+    });
+});
+
+// Session istatistikleri
+app.get('/api/stats', (req, res) => {
+    const stats = SessionManager.getStats();
+    res.json({
+        success: true,
+        sessions: stats,
+        config: {
+            maxSessions: CONFIG.MAX_SESSIONS,
+            sessionTimeout: CONFIG.SESSION_TIMEOUT / 60000 // dakika
+        }
+    });
+});
 
 // ============== API ENDPOINTS ==============
 
@@ -112,7 +224,10 @@ app.post('/api/group/create', async (req, res) => {
     }
     try {
         const groupName = session.config.group.name || req.body.name;
-        await session.createGroup(groupName);
+        if (!validateGroupName(groupName)) {
+            return res.status(400).json({ success: false, error: 'Geçersiz grup adı (1-100 karakter)' });
+        }
+        await session.createGroup(groupName.trim());
         res.json({ success: true, groupId: session.config.group.groupId });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -183,6 +298,12 @@ app.post('/api/message/send', async (req, res) => {
     }
     try {
         const { to, message } = req.body;
+        if (!validatePhoneNumber(to)) {
+            return res.status(400).json({ success: false, error: 'Geçersiz telefon numarası' });
+        }
+        if (!validateMessage(message)) {
+            return res.status(400).json({ success: false, error: 'Geçersiz mesaj (1-4096 karakter)' });
+        }
         await session.sendMessage(to, message);
         res.json({ success: true });
     } catch (error) {
@@ -437,8 +558,8 @@ io.on('connection', (socket) => {
 
     // Session'a katıl
     socket.on('join-session', (sessionId) => {
-        if (!sessionId) {
-            socket.emit('error', { message: 'Session ID gerekli' });
+        if (!sessionId || !validateSessionId(sessionId)) {
+            socket.emit('error', { message: 'Geçersiz Session ID' });
             return;
         }
 
@@ -484,16 +605,60 @@ app.get('/', (req, res) => {
 // ============== ERROR HANDLING ==============
 
 process.on('uncaughtException', (err) => {
-    console.error('Uncaught Exception:', err);
+    console.error('[Server] Uncaught Exception:', err.message);
+    // Kritik hata durumunda sunucuyu kapatma (Railway otomatik restart yapar)
 });
 
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+process.on('unhandledRejection', (reason) => {
+    console.error('[Server] Unhandled Rejection:', reason);
 });
+
+// ============== GRACEFUL SHUTDOWN ==============
+
+let isShuttingDown = false;
+
+async function gracefulShutdown(signal) {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+
+    console.log(`\n[Server] ${signal} sinyali alındı. Sunucu kapatılıyor...`);
+
+    // Yeni bağlantıları reddet
+    server.close(() => {
+        console.log('[Server] HTTP sunucusu kapatıldı');
+    });
+
+    // Socket.io bağlantılarını kapat
+    io.close(() => {
+        console.log('[Server] Socket.io kapatıldı');
+    });
+
+    // Session temizliğini durdur
+    SessionManager.stopCleanup();
+
+    // Tüm session'ları kapat
+    try {
+        await SessionManager.destroyAll();
+    } catch (err) {
+        console.error('[Server] Session kapatma hatası:', err.message);
+    }
+
+    console.log('[Server] Sunucu başarıyla kapatıldı');
+    process.exit(0);
+}
+
+// Shutdown sinyalleri
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // ============== START SERVER ==============
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`Server başlatıldı: http://localhost:${PORT}`);
+server.listen(SERVER_CONFIG.PORT, () => {
+    console.log('='.repeat(50));
+    console.log(`[Server] WhatsApp Bot Panel başlatıldı`);
+    console.log(`[Server] Port: ${SERVER_CONFIG.PORT}`);
+    console.log(`[Server] Max Sessions: ${CONFIG.MAX_SESSIONS}`);
+    console.log(`[Server] Session Timeout: ${CONFIG.SESSION_TIMEOUT / 60000} dakika`);
+    console.log(`[Server] Health: http://localhost:${SERVER_CONFIG.PORT}/health`);
+    console.log('='.repeat(50));
 });

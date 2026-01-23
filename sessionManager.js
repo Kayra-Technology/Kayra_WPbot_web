@@ -3,6 +3,15 @@ const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 
+// ============== CONFIGURATION ==============
+const CONFIG = {
+    MAX_SESSIONS: parseInt(process.env.MAX_SESSIONS) || 5,          // Maksimum eş zamanlı session
+    SESSION_TIMEOUT: parseInt(process.env.SESSION_TIMEOUT) || 1800000, // 30 dakika inaktiflik
+    CLEANUP_INTERVAL: 60000,  // Her 1 dakikada temizlik kontrolü
+    MAX_LOGS_PER_SESSION: 100,
+    PUPPETEER_TIMEOUT: 60000
+};
+
 // Aktif sessionlar
 const sessions = new Map();
 
@@ -12,7 +21,28 @@ if (!fs.existsSync(SESSIONS_DIR)) {
     fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 }
 
-// Session sınıfı
+// ============== UTILITIES ==============
+
+// Timeout ile Promise sarmalama
+function withTimeout(promise, ms, errorMessage = 'İşlem zaman aşımına uğradı') {
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(errorMessage)), ms);
+    });
+    return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
+}
+
+// Güvenli JSON parse
+function safeJsonParse(str, defaultValue = null) {
+    try {
+        return JSON.parse(str);
+    } catch {
+        return defaultValue;
+    }
+}
+
+// ============== SESSION CLASS ==============
+
 class WhatsAppSession {
     constructor(sessionId, io) {
         this.sessionId = sessionId;
@@ -20,9 +50,16 @@ class WhatsAppSession {
         this.client = null;
         this.qrCodeData = null;
         this.isReady = false;
-        this.isInitializing = false; // Çoklu initialize'ı engelle
+        this.isInitializing = false;
+        this.isSendingInvites = false;
+        this.lastActivity = Date.now();
         this.config = this.loadConfig();
         this.logs = [];
+    }
+
+    // Aktivite güncelle
+    touch() {
+        this.lastActivity = Date.now();
     }
 
     // Config yükle
@@ -34,30 +71,27 @@ class WhatsAppSession {
             inviteHistory: {},
             inviteStats: { date: '', count: 0 },
             safetySettings: {
-                minDelay: 3000,
-                maxDelay: 8000,
+                minDelay: 5000,
+                maxDelay: 10000,
                 dailyLimit: 50,
                 messageVariations: true
-            },
-            schedule: {
-                inviteDay: 1,
-                inviteHour: 9,
-                inviteMinute: 0,
-                cleanupDay: 0,
-                cleanupHour: 18,
-                cleanupMinute: 0
             }
         };
 
         try {
             if (fs.existsSync(configPath)) {
-                return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+                const loaded = safeJsonParse(fs.readFileSync(configPath, 'utf8'), {});
+                return {
+                    ...defaultConfig,
+                    ...loaded,
+                    safetySettings: { ...defaultConfig.safetySettings, ...loaded.safetySettings }
+                };
             }
         } catch (e) {
-            console.error(`Config load error for ${this.sessionId}:`, e);
+            console.error(`[${this.sessionId.substring(0, 8)}] Config load error:`, e.message);
         }
 
-        // Dizini oluştur ve default config kaydet
+        // Dizin ve config oluştur
         const sessionDir = path.join(SESSIONS_DIR, this.sessionId);
         if (!fs.existsSync(sessionDir)) {
             fs.mkdirSync(sessionDir, { recursive: true });
@@ -68,197 +102,173 @@ class WhatsAppSession {
 
     // Config kaydet
     saveConfig() {
-        const configPath = path.join(SESSIONS_DIR, this.sessionId, 'config.json');
-        fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
-        this.emitToSession('config-updated', this.config);
-    }
-
-    // Türkiye saati
-    getTurkeyTime() {
-        const now = new Date();
-        const turkeyOffset = 3 * 60;
-        const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
-        return new Date(utc + (turkeyOffset * 60000));
+        try {
+            const configPath = path.join(SESSIONS_DIR, this.sessionId, 'config.json');
+            fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
+            this.emitToSession('config-updated', this.config);
+        } catch (e) {
+            console.error(`[${this.sessionId.substring(0, 8)}] Config save error:`, e.message);
+        }
     }
 
     // Log ekle
     log(message, type = 'info') {
-        const turkeyTime = this.getTurkeyTime();
-        const timestamp = turkeyTime.toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
+        const timestamp = new Date().toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul' });
         const logEntry = { timestamp, message, type };
 
         this.logs.push(logEntry);
-        if (this.logs.length > 100) this.logs.shift();
+        if (this.logs.length > CONFIG.MAX_LOGS_PER_SESSION) {
+            this.logs.shift();
+        }
 
-        console.log(`[${this.sessionId}][${timestamp}] ${message}`);
+        console.log(`[${this.sessionId.substring(0, 8)}][${timestamp}] ${message}`);
         this.emitToSession('log', logEntry);
+        this.touch();
     }
 
     // Session'a emit
     emitToSession(event, data) {
-        this.io.to(this.sessionId).emit(event, data);
+        try {
+            this.io.to(this.sessionId).emit(event, data);
+        } catch (e) { }
     }
 
     // WhatsApp client başlat
-    initialize() {
+    async initialize() {
         if (this.client || this.isInitializing) {
             this.log('Client zaten başlatılmış veya başlatılıyor', 'warning');
             return;
         }
 
         this.isInitializing = true;
-        this.log('WhatsApp Client yapılandırması hazırlanıyor...', 'info');
+        this.log('WhatsApp Client başlatılıyor...', 'info');
 
-        this.client = new Client({
-            authStrategy: new LocalAuth({
-                clientId: this.sessionId,
-                dataPath: path.join(SESSIONS_DIR, this.sessionId, '.wwebjs_auth')
-            }),
-            puppeteer: {
-                headless: true,
-                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--single-process',
-                    '--disable-gpu'
-                ],
-                timeout: 60000
-            },
-            qrMaxRetries: 5,
-            restartOnAuthFail: true,
-            webVersionCache: {
-                type: 'remote',
-                remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
-            }
-        });
+        try {
+            this.client = new Client({
+                authStrategy: new LocalAuth({
+                    clientId: this.sessionId,
+                    dataPath: path.join(SESSIONS_DIR, this.sessionId, '.wwebjs_auth')
+                }),
+                puppeteer: {
+                    headless: true,
+                    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+                    args: [
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-accelerated-2d-canvas',
+                        '--no-first-run',
+                        '--no-zygote',
+                        '--single-process',
+                        '--disable-gpu',
+                        '--disable-extensions',
+                        '--disable-software-rasterizer',
+                        '--disable-background-networking',
+                        '--disable-default-apps',
+                        '--disable-sync',
+                        '--disable-translate',
+                        '--hide-scrollbars',
+                        '--metrics-recording-only',
+                        '--mute-audio',
+                        '--no-default-browser-check',
+                        '--safebrowsing-disable-auto-update'
+                    ],
+                    timeout: CONFIG.PUPPETEER_TIMEOUT
+                },
+                qrMaxRetries: 3,
+                restartOnAuthFail: false,
+                webVersionCache: {
+                    type: 'remote',
+                    remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+                }
+            });
 
-        this.log('Event listener\'lar ekleniyor...', 'info');
+            this._setupEventHandlers();
 
-        // QR kodu
+            await this.client.initialize();
+
+        } catch (err) {
+            this.log(`Client başlatma hatası: ${err.message}`, 'error');
+            this.isInitializing = false;
+            this.client = null;
+        }
+    }
+
+    // Event handler'ları ayarla
+    _setupEventHandlers() {
         this.client.on('qr', (qr) => {
-            this.log('QR Kodu alındı, oluşturuluyor...', 'info');
-
-            qrcode.toDataURL(qr, {
-                errorCorrectionLevel: 'M',
-                type: 'image/png',
-                width: 400,
-                margin: 1
-            })
+            this.log('QR Kodu alındı', 'info');
+            qrcode.toDataURL(qr, { errorCorrectionLevel: 'M', width: 400, margin: 1 })
                 .then((dataUrl) => {
                     this.qrCodeData = dataUrl;
-                    this.log('QR Kodu başarıyla oluşturuldu', 'success');
+                    this.log('QR Kodu hazır - Tarayın', 'success');
                     this.emitToSession('qr', this.qrCodeData);
                 })
-                .catch((err) => {
-                    this.log(`QR Kodu oluşturma hatası: ${err.message}`, 'error');
-                });
+                .catch((err) => this.log(`QR hatası: ${err.message}`, 'error'));
         });
 
-        // Bağlantı hazır
-        this.client.on('ready', async () => {
+        this.client.on('ready', () => {
             this.log('WhatsApp bağlantısı kuruldu!', 'success');
             this.isReady = true;
+            this.isInitializing = false;
             this.qrCodeData = null;
             this.emitToSession('ready', {
-                number: this.client.info.wid.user,
-                name: this.client.info.pushname
+                number: this.client.info?.wid?.user,
+                name: this.client.info?.pushname
             });
         });
 
-        // Kimlik doğrulama
         this.client.on('authenticated', () => {
-            this.log('Kimlik doğrulama başarılı!', 'success');
+            this.log('Kimlik doğrulama başarılı', 'success');
             this.emitToSession('authenticated');
         });
 
         this.client.on('auth_failure', (msg) => {
             this.log(`Kimlik doğrulama hatası: ${msg}`, 'error');
+            this.isInitializing = false;
             this.emitToSession('auth_failure', msg);
         });
 
         this.client.on('disconnected', (reason) => {
             this.log(`Bağlantı kesildi: ${reason}`, 'error');
             this.isReady = false;
+            this.isInitializing = false;
             this.emitToSession('disconnected', reason);
         });
 
-        this.client.on('loading_screen', (percent, message) => {
-            this.log(`Yükleniyor: ${percent}% - ${message}`, 'info');
-        });
-
-        this.client.on('message', async (msg) => {
-            try {
-                const chat = await msg.getChat();
-                const contact = await msg.getContact();
-                const senderName = contact.pushname || contact.number || msg.from;
-
-                this.emitToSession('message', {
-                    from: msg.from,
-                    body: msg.body,
-                    isGroup: chat.isGroup,
-                    groupName: chat.isGroup ? chat.name : null,
-                    senderName,
-                    timestamp: msg.timestamp
-                });
-            } catch (error) {
-                this.log(`Mesaj işleme hatası: ${error.message}`, 'error');
+        this.client.on('loading_screen', (percent) => {
+            if (percent % 20 === 0) {
+                this.log(`Yükleniyor: ${percent}%`, 'info');
             }
         });
-
-        this.client.initialize()
-            .then(() => {
-                this.isInitializing = false;
-            })
-            .catch(err => {
-                this.log(`WhatsApp Client başlatma hatası: ${err.message}`, 'error');
-                this.isInitializing = false;
-                this.client = null;
-            });
-        this.log('WhatsApp Client başlatılıyor...', 'info');
     }
 
     // Client'ı yeniden başlat
     async restart() {
         if (this.isInitializing) {
-            this.log('Client zaten başlatılıyor, restart atlandı', 'warning');
+            this.log('Client zaten başlatılıyor', 'warning');
             return;
         }
 
-        this.log('WhatsApp Client yeniden başlatılıyor...', 'info');
-
-        if (this.client) {
-            try {
-                await this.client.destroy();
-            } catch (e) {
-                this.log(`Client destroy hatası: ${e.message}`, 'warning');
-            }
-            this.client = null;
-        }
-
-        this.isReady = false;
-        this.qrCodeData = null;
-        this.isInitializing = false;
-
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        this.initialize();
+        this.log('WhatsApp yeniden başlatılıyor...', 'info');
+        await this.destroy();
+        await new Promise(r => setTimeout(r, 2000));
+        await this.initialize();
     }
 
     // Client'ı kapat
     async destroy() {
+        this.isSendingInvites = false;
+
         if (this.client) {
             try {
                 await this.client.destroy();
-            } catch (e) {
-                console.error(`Session ${this.sessionId} destroy error:`, e);
-            }
+            } catch (e) { }
             this.client = null;
         }
+
         this.isReady = false;
+        this.isInitializing = false;
         this.qrCodeData = null;
     }
 
@@ -269,20 +279,18 @@ class WhatsAppSession {
             isReady: this.isReady,
             hasQR: !!this.qrCodeData,
             qrCode: this.qrCodeData,
-            botNumber: this.isReady && this.client ? this.client.info.wid.user : null,
-            botName: this.isReady && this.client ? this.client.info.pushname : null
+            botNumber: this.isReady && this.client?.info?.wid?.user || null,
+            botName: this.isReady && this.client?.info?.pushname || null,
+            isSendingInvites: this.isSendingInvites,
+            lastActivity: this.lastActivity
         };
     }
 
     // Grup oluştur
     async createGroup(groupName) {
-        if (!this.isReady) {
-            throw new Error('WhatsApp bağlantısı hazır değil');
-        }
-
-        if (!groupName || groupName.trim().length === 0) {
-            throw new Error('Grup adı belirtilmemiş!');
-        }
+        this.touch();
+        if (!this.isReady) throw new Error('WhatsApp bağlantısı hazır değil');
+        if (!groupName?.trim()) throw new Error('Grup adı belirtilmemiş!');
 
         this.log(`"${groupName}" grubu oluşturuluyor...`, 'info');
 
@@ -290,183 +298,243 @@ class WhatsAppSession {
         this.config.inviteStats = { date: '', count: 0 };
         this.config.group.inviteLink = '';
 
-        const group = await this.client.createGroup(groupName, []);
+        const group = await withTimeout(
+            this.client.createGroup(groupName, []),
+            30000,
+            'Grup oluşturma zaman aşımı'
+        );
 
-        if (!group || !group.gid) {
-            throw new Error('Grup oluşturuldu ancak ID alınamadı');
-        }
+        if (!group?.gid) throw new Error('Grup oluşturulamadı');
 
         this.config.group.groupId = group.gid._serialized;
         this.config.group.name = groupName;
         this.saveConfig();
 
-        this.log(`Grup oluşturuldu! ID: ${this.config.group.groupId}`, 'success');
+        this.log(`Grup oluşturuldu: ${this.config.group.groupId}`, 'success');
 
-        // Senkronizasyon bekle
-        this.log('WhatsApp senkronizasyonu bekleniyor...', 'info');
-        await new Promise(resolve => setTimeout(resolve, 20000));
+        this.log('Senkronizasyon bekleniyor (15s)...', 'info');
+        await new Promise(r => setTimeout(r, 15000));
 
         return group;
     }
 
     // Davet linki al
     async getInviteLink() {
+        this.touch();
         const groupId = this.config.group.groupId;
+        if (!groupId?.includes('@g.us')) throw new Error('Geçersiz grup ID!');
 
-        if (!groupId || !groupId.includes('@g.us')) {
-            throw new Error('Geçersiz grup ID! Önce grup oluşturun.');
-        }
+        this.log('Davet linki alınıyor...', 'info');
 
-        this.log(`Davet linki alınıyor...`, 'info');
+        const chat = await withTimeout(
+            this.client.getChatById(groupId),
+            15000,
+            'Grup bulunamadı'
+        );
 
-        const chat = await this.client.getChatById(groupId);
-        if (!chat || !chat.isGroup) {
-            throw new Error('Grup bulunamadı');
-        }
+        if (!chat?.isGroup) throw new Error('Grup bulunamadı');
 
-        const inviteCode = await chat.getInviteCode();
+        const inviteCode = await withTimeout(chat.getInviteCode(), 10000, 'Davet kodu alınamadı');
         const inviteLink = `https://chat.whatsapp.com/${inviteCode}`;
 
         this.config.group.inviteLink = inviteLink;
         this.saveConfig();
 
-        this.log(`Davet linki alındı: ${inviteLink}`, 'success');
+        this.log(`Davet linki: ${inviteLink}`, 'success');
         return inviteLink;
     }
 
-    // Davet gönder - Standart whatsapp-web.js sendMessage kullanır
-    async sendInvites() {
-        if (!this.config.group.groupId) {
-            throw new Error('Grup henüz oluşturulmamış!');
-        }
+    // URL ile mesaj gönder
+    async sendMessageViaURL(number, message) {
+        const browser = this.client?.pupBrowser;
+        if (!browser) throw new Error('Browser bulunamadı');
 
-        if (!this.isReady || !this.client) {
-            throw new Error('WhatsApp bağlantısı hazır değil!');
-        }
+        let newPage = null;
 
-        let inviteLink = this.config.group.inviteLink;
-        if (!inviteLink || !inviteLink.includes('chat.whatsapp.com/')) {
-            inviteLink = await this.getInviteLink();
-        }
+        try {
+            const encodedMessage = encodeURIComponent(message);
+            const waUrl = `https://web.whatsapp.com/send?phone=${number}&text=${encodedMessage}`;
 
-        const messageTemplates = [
-            `Merhaba,\n\n${this.config.group.name} grubuna katılımınız beklenmektedir.\n\nKatılım linki:\n${inviteLink}`,
-            `Sayın ilgili,\n\n${this.config.group.name} grubuna davetlisiniz.\n\n${inviteLink}`,
-            `${this.config.group.name} grubuna katılım linkiniz:\n\n${inviteLink}`,
-            `Merhaba,\n\n${this.config.group.name} için grup oluşturulmuştur:\n\n${inviteLink}`
-        ];
+            newPage = await browser.newPage();
+            this.log(`🔗 Tab açıldı: ${number}`, 'info');
 
-        const safetySettings = this.config.safetySettings;
-        let sentCount = 0;
-        let skipCount = 0;
+            await newPage.goto(waUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+            await new Promise(r => setTimeout(r, 5000));
 
-        this.log(`📋 Toplam ${this.config.inviteNumbers.length} numaraya davet gönderilecek`, 'info');
+            const selectors = [
+                'div[contenteditable="true"][data-tab="10"]',
+                'footer div[contenteditable="true"]',
+                'div[data-testid="conversation-compose-box-input"]'
+            ];
 
-        for (let i = 0; i < this.config.inviteNumbers.length; i++) {
-            const number = this.config.inviteNumbers[i];
-
-            // Client kontrolü - her mesajda kontrol et
-            if (!this.isReady || !this.client) {
-                this.log(`⚠️ WhatsApp bağlantısı koptu, işlem durduruluyor`, 'error');
-                break;
-            }
-
-            // Numara format kontrolü
-            if (!number || number.length < 10) {
-                this.log(`⚠️ Geçersiz numara atlandı: ${number}`, 'warning');
-                skipCount++;
-                continue;
-            }
-
-            // Günlük limit kontrolü
-            const today = new Date().toISOString().split('T')[0];
-            if (this.config.inviteStats.date !== today) {
-                this.config.inviteStats = { date: today, count: 0 };
-            }
-            if (this.config.inviteStats.count >= safetySettings.dailyLimit) {
-                this.log(`⚠️ Günlük davet limiti (${safetySettings.dailyLimit}) doldu!`, 'warning');
-                break;
-            }
-
-            try {
-                // Numaranın WhatsApp'ta kayıtlı olup olmadığını kontrol et
+            for (const sel of selectors) {
                 try {
-                    const numberId = await this.client.getNumberId(number);
-                    if (!numberId) {
-                        this.log(`⚠️ Numara WhatsApp'ta kayıtlı değil: ${number}`, 'warning');
-                        skipCount++;
-                        continue;
-                    }
-                } catch (checkErr) {
-                    // getNumberId hatası - devam et, göndermeyi dene
-                    this.log(`⚠️ Numara kontrolü başarısız, deneniyor: ${number}`, 'info');
-                }
+                    await newPage.waitForSelector(sel, { timeout: 10000 });
+                    this.log(`✓ Mesaj kutusu bulundu`, 'info');
+                    break;
+                } catch (e) { }
+            }
 
-                const message = safetySettings.messageVariations
-                    ? messageTemplates[Math.floor(Math.random() * messageTemplates.length)]
-                    : messageTemplates[0];
+            await new Promise(r => setTimeout(r, 2000));
+            await newPage.keyboard.press('Enter');
+            this.log(`⏎ Enter basıldı`, 'info');
 
-                this.log(`📤 Davet gönderiliyor (${i + 1}/${this.config.inviteNumbers.length}): ${number}...`, 'info');
+            await new Promise(r => setTimeout(r, 3000));
+            return { success: true };
 
-                // Standart whatsapp-web.js sendMessage kullan
-                const chatId = `${number}@c.us`;
-                await this.client.sendMessage(chatId, message);
+        } finally {
+            if (newPage) {
+                try {
+                    await newPage.close();
+                    this.log(`✓ Tab kapatıldı`, 'info');
+                } catch (e) { }
+            }
+        }
+    }
 
-                // Kayıt
-                this.config.inviteHistory[number] = {
-                    lastInvite: new Date().toISOString(),
-                    count: (this.config.inviteHistory[number]?.count || 0) + 1
-                };
-                this.config.inviteStats.count++;
-                sentCount++;
+    // Davet gönder
+    async sendInvites() {
+        this.touch();
+        if (!this.config.group.groupId) throw new Error('Grup henüz oluşturulmamış!');
+        if (!this.isReady || !this.client) throw new Error('WhatsApp bağlantısı hazır değil!');
+        if (this.isSendingInvites) throw new Error('Davet gönderimi zaten devam ediyor!');
 
-                this.log(`✅ Davet gönderildi (${sentCount} başarılı): ${number}`, 'success');
+        this.isSendingInvites = true;
+        this.emitToSession('invite-status', { active: true });
 
-                // Gecikme - Rate limit'e takılmamak için
-                const delay = Math.floor(Math.random() * (safetySettings.maxDelay - safetySettings.minDelay + 1)) + safetySettings.minDelay;
-                this.log(`⏳ ${Math.round(delay/1000)}s bekleniyor...`, 'info');
-                await new Promise(resolve => setTimeout(resolve, delay));
+        try {
+            let inviteLink = this.config.group.inviteLink;
+            if (!inviteLink?.includes('chat.whatsapp.com/')) {
+                inviteLink = await this.getInviteLink();
+            }
 
-            } catch (error) {
-                const errorMsg = error.message || String(error);
+            const templates = [
+                `Merhaba,\n\n${this.config.group.name} grubuna katılımınız beklenmektedir.\n\nKatılım linki:\n${inviteLink}`,
+                `Sayın ilgili,\n\n${this.config.group.name} grubuna davetlisiniz.\n\n${inviteLink}`,
+                `${this.config.group.name} grubuna katılım linkiniz:\n\n${inviteLink}`,
+                `Merhaba,\n\n${this.config.group.name} için grup oluşturulmuştur:\n\n${inviteLink}`
+            ];
 
-                // Kritik hata kontrolü - bağlantı kopmuş olabilir
-                if (errorMsg.includes('Execution context') ||
-                    errorMsg.includes('Protocol error') ||
-                    errorMsg.includes('Session closed') ||
-                    errorMsg.includes('Target closed')) {
-                    this.log(`❌ Kritik hata! Bağlantı kaybedildi: ${errorMsg}`, 'error');
-                    this.isReady = false;
+            const { safetySettings } = this.config;
+            const numbers = [...this.config.inviteNumbers];
+            const total = numbers.length;
+
+            let sentCount = 0;
+            let skipCount = 0;
+
+            this.log(`📋 Davet başlıyor: ${total} numara`, 'info');
+
+            for (let i = 0; i < total; i++) {
+                const number = numbers[i];
+
+                if (!this.isReady || !this.client || !this.isSendingInvites) {
+                    this.log(`⛔ İşlem durduruldu`, 'warning');
                     break;
                 }
 
-                this.log(`❌ Davet hatası (${number}): ${errorMsg}`, 'error');
+                if (!number || number.length < 10) {
+                    skipCount++;
+                    continue;
+                }
 
-                // Hata sonrası daha uzun bekle
-                await new Promise(resolve => setTimeout(resolve, 5000));
+                const today = new Date().toISOString().split('T')[0];
+                if (this.config.inviteStats.date !== today) {
+                    this.config.inviteStats = { date: today, count: 0 };
+                }
+                if (this.config.inviteStats.count >= safetySettings.dailyLimit) {
+                    this.log(`⚠️ Günlük limit doldu (${safetySettings.dailyLimit})`, 'warning');
+                    break;
+                }
+
+                this.log(`📤 [${i + 1}/${total}] Gönderiliyor: ${number}`, 'info');
+
+                try {
+                    const message = safetySettings.messageVariations
+                        ? templates[Math.floor(Math.random() * templates.length)]
+                        : templates[0];
+
+                    const result = await withTimeout(
+                        this.sendMessageViaURL(number, message),
+                        90000,
+                        'Mesaj gönderme zaman aşımı'
+                    );
+
+                    if (result.success) {
+                        this.config.inviteHistory[number] = {
+                            lastInvite: new Date().toISOString(),
+                            count: (this.config.inviteHistory[number]?.count || 0) + 1
+                        };
+                        this.config.inviteStats.count++;
+                        sentCount++;
+
+                        this.log(`✅ [${sentCount}] Gönderildi: ${number}`, 'success');
+
+                        this.emitToSession('invite-progress', {
+                            current: i + 1,
+                            total,
+                            sent: sentCount,
+                            skipped: skipCount,
+                            number
+                        });
+                    }
+
+                } catch (error) {
+                    const errMsg = error.message || String(error);
+
+                    if (errMsg.includes('Execution context') ||
+                        errMsg.includes('Protocol error') ||
+                        errMsg.includes('Session closed') ||
+                        errMsg.includes('Target closed') ||
+                        errMsg.includes('Browser')) {
+                        this.log(`❌ Kritik hata: ${errMsg}`, 'error');
+                        this.isReady = false;
+                        break;
+                    }
+
+                    this.log(`❌ Hata (${number}): ${errMsg}`, 'error');
+                    skipCount++;
+                }
+
+                const delay = Math.floor(Math.random() * (safetySettings.maxDelay - safetySettings.minDelay + 1)) + safetySettings.minDelay;
+                this.log(`⏳ ${Math.round(delay / 1000)}s bekleniyor...`, 'info');
+                await new Promise(r => setTimeout(r, delay));
+
+                if (sentCount > 0 && sentCount % 5 === 0) {
+                    this.saveConfig();
+                }
             }
 
-            // Her 10 mesajda config kaydet
-            if (sentCount % 10 === 0 && sentCount > 0) {
-                this.saveConfig();
-            }
+            this.saveConfig();
+            this.log(`📊 Tamamlandı! Başarılı: ${sentCount}, Atlanan: ${skipCount}`, 'success');
+
+            return sentCount;
+
+        } finally {
+            this.isSendingInvites = false;
+            this.emitToSession('invite-status', { active: false });
         }
+    }
 
-        this.saveConfig();
-        this.log(`📊 Davet gönderimi tamamlandı! Başarılı: ${sentCount}, Atlanan: ${skipCount}, Toplam: ${this.config.inviteNumbers.length}`, 'success');
-        return sentCount;
+    // Davet iptal
+    cancelInvites() {
+        if (this.isSendingInvites) {
+            this.isSendingInvites = false;
+            this.log('Davet gönderimi iptal edildi', 'warning');
+        }
     }
 
     // Grubu temizle
     async cleanupGroup() {
-        if (!this.config.group.groupId) {
-            throw new Error('Grup henüz oluşturulmamış!');
-        }
+        this.touch();
+        if (!this.config.group.groupId) throw new Error('Grup henüz oluşturulmamış!');
 
-        const chat = await this.client.getChatById(this.config.group.groupId);
-        if (!chat.isGroup) {
-            throw new Error('Bu bir grup değil!');
-        }
+        const chat = await withTimeout(
+            this.client.getChatById(this.config.group.groupId),
+            15000,
+            'Grup bulunamadı'
+        );
+
+        if (!chat.isGroup) throw new Error('Bu bir grup değil!');
 
         const participants = chat.participants || [];
         const botNumber = this.client.info.wid._serialized;
@@ -480,9 +548,9 @@ class WhatsAppSession {
                 await chat.removeParticipants([participantId]);
                 this.log(`Kullanıcı çıkarıldı: ${participantId}`, 'success');
                 removedCount++;
-                await new Promise(resolve => setTimeout(resolve, 1500));
+                await new Promise(r => setTimeout(r, 1500));
             } catch (error) {
-                this.log(`Çıkarma hatası (${participantId}): ${error.message}`, 'error');
+                this.log(`Çıkarma hatası: ${error.message}`, 'error');
             }
         }
 
@@ -492,23 +560,21 @@ class WhatsAppSession {
 
     // Grupları listele
     async getGroups() {
-        if (!this.isReady) {
-            throw new Error('WhatsApp bağlantısı hazır değil');
-        }
+        this.touch();
+        if (!this.isReady) throw new Error('WhatsApp bağlantısı hazır değil');
 
         const chats = await this.client.getChats();
         return chats.filter(c => c.isGroup).map(g => ({
             id: g.id._serialized,
             name: g.name,
-            participants: g.participants ? g.participants.length : 0
+            participants: g.participants?.length || 0
         }));
     }
 
     // Mesaj gönder
     async sendMessage(to, message) {
-        if (!this.isReady) {
-            throw new Error('WhatsApp bağlantısı hazır değil');
-        }
+        this.touch();
+        if (!this.isReady) throw new Error('WhatsApp bağlantısı hazır değil');
 
         const chatId = to.includes('@') ? to : `${to}@c.us`;
         await this.client.sendMessage(chatId, message);
@@ -516,41 +582,124 @@ class WhatsAppSession {
     }
 }
 
-// Session yöneticisi
+// ============== SESSION MANAGER ==============
+
 const SessionManager = {
+    _cleanupInterval: null,
+
     // Session al veya oluştur
     getOrCreate(sessionId, io) {
-        if (!sessions.has(sessionId)) {
-            const session = new WhatsAppSession(sessionId, io);
-            sessions.set(sessionId, session);
-            session.initialize();
+        // Session zaten varsa döndür
+        if (sessions.has(sessionId)) {
+            const session = sessions.get(sessionId);
+            session.touch();
+            return session;
         }
-        return sessions.get(sessionId);
+
+        // Maksimum session kontrolü
+        if (sessions.size >= CONFIG.MAX_SESSIONS) {
+            // En eski inaktif session'ı bul ve sil
+            let oldestSession = null;
+            let oldestTime = Date.now();
+
+            for (const [id, session] of sessions) {
+                if (session.lastActivity < oldestTime && !session.isSendingInvites) {
+                    oldestSession = id;
+                    oldestTime = session.lastActivity;
+                }
+            }
+
+            if (oldestSession) {
+                console.log(`[SessionManager] Maksimum session limiti - eski session siliniyor: ${oldestSession.substring(0, 8)}`);
+                this.remove(oldestSession);
+            } else {
+                throw new Error(`Maksimum session limiti (${CONFIG.MAX_SESSIONS}) aşıldı. Lütfen daha sonra tekrar deneyin.`);
+            }
+        }
+
+        // Yeni session oluştur
+        const session = new WhatsAppSession(sessionId, io);
+        sessions.set(sessionId, session);
+        session.initialize();
+
+        console.log(`[SessionManager] Yeni session: ${sessionId.substring(0, 8)} (Toplam: ${sessions.size})`);
+        return session;
     },
 
-    // Session al
     get(sessionId) {
-        return sessions.get(sessionId);
+        const session = sessions.get(sessionId);
+        if (session) session.touch();
+        return session;
     },
 
-    // Session var mı?
     has(sessionId) {
         return sessions.has(sessionId);
     },
 
-    // Session sil
     async remove(sessionId) {
         const session = sessions.get(sessionId);
         if (session) {
+            console.log(`[SessionManager] Session siliniyor: ${sessionId.substring(0, 8)}`);
             await session.destroy();
             sessions.delete(sessionId);
         }
     },
 
-    // Tüm sessionları al
     getAll() {
         return Array.from(sessions.entries());
+    },
+
+    getStats() {
+        return {
+            total: sessions.size,
+            max: CONFIG.MAX_SESSIONS,
+            active: Array.from(sessions.values()).filter(s => s.isReady).length,
+            sending: Array.from(sessions.values()).filter(s => s.isSendingInvites).length
+        };
+    },
+
+    // Inaktif session temizliği
+    startCleanup() {
+        if (this._cleanupInterval) return;
+
+        this._cleanupInterval = setInterval(() => {
+            const now = Date.now();
+
+            for (const [id, session] of sessions) {
+                const inactiveTime = now - session.lastActivity;
+
+                // 30 dakika inaktif ve davet göndermiyor
+                if (inactiveTime > CONFIG.SESSION_TIMEOUT && !session.isSendingInvites) {
+                    console.log(`[SessionManager] Inaktif session temizleniyor: ${id.substring(0, 8)} (${Math.round(inactiveTime / 60000)} dk)`);
+                    this.remove(id);
+                }
+            }
+        }, CONFIG.CLEANUP_INTERVAL);
+
+        console.log('[SessionManager] Otomatik temizlik başlatıldı');
+    },
+
+    stopCleanup() {
+        if (this._cleanupInterval) {
+            clearInterval(this._cleanupInterval);
+            this._cleanupInterval = null;
+        }
+    },
+
+    // Tüm session'ları kapat
+    async destroyAll() {
+        console.log('[SessionManager] Tüm session\'lar kapatılıyor...');
+        const promises = [];
+        for (const [id, session] of sessions) {
+            promises.push(session.destroy().catch(e => console.error(`Session ${id} destroy error:`, e)));
+        }
+        await Promise.all(promises);
+        sessions.clear();
+        console.log('[SessionManager] Tüm session\'lar kapatıldı');
     }
 };
 
-module.exports = { SessionManager, WhatsAppSession };
+// Cleanup'ı başlat
+SessionManager.startCleanup();
+
+module.exports = { SessionManager, WhatsAppSession, CONFIG };
