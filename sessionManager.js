@@ -260,6 +260,9 @@ class WhatsAppSession {
     async destroy() {
         this.isSendingInvites = false;
 
+        // Send page'i kapat
+        await this.closeSendPage();
+
         if (this.client) {
             try {
                 await this.client.destroy();
@@ -344,52 +347,246 @@ class WhatsAppSession {
         return inviteLink;
     }
 
-    // URL ile mesaj gönder
-    async sendMessageViaURL(number, message) {
-        const browser = this.client?.pupBrowser;
-        if (!browser) throw new Error('Browser bulunamadı');
+    // Store API ile mesaj gönder (tab açmadan)
+    async sendMessageViaStore(number, message) {
+        const page = this.client?.pupPage;
+        if (!page) throw new Error('Sayfa bulunamadı');
 
-        let newPage = null;
+        const chatId = `${number}@c.us`;
+
+        const result = await page.evaluate(async (chatId, message) => {
+            try {
+                const Store = window.Store;
+                if (!Store) {
+                    return { success: false, error: 'Store bulunamadı' };
+                }
+
+                // WID oluştur
+                let wid;
+                if (Store.WidFactory && Store.WidFactory.createWid) {
+                    wid = Store.WidFactory.createWid(chatId);
+                } else if (Store.createWid) {
+                    wid = Store.createWid(chatId);
+                } else {
+                    // Manuel WID oluştur
+                    const [user, server] = chatId.split('@');
+                    wid = { user, server, _serialized: chatId };
+                }
+
+                // Chat'i bul
+                let chat = Store.Chat.get(chatId);
+
+                if (!chat) {
+                    // Chat.find ile bul/oluştur
+                    if (Store.Chat.find) {
+                        chat = await Store.Chat.find(wid);
+                    } else if (Store.Chat.findImpl) {
+                        chat = await Store.Chat.findImpl(wid);
+                    }
+                }
+
+                if (!chat) {
+                    return { success: false, error: 'Chat bulunamadı' };
+                }
+
+                // Mesaj gönderme yöntemlerini dene
+                // Yöntem 1: WWebJS'in kullandığı yöntem
+                if (Store.SendMessage) {
+                    const msgResult = await Store.SendMessage.sendTextMsgToChat(chat, message);
+                    return { success: true, method: 'SendMessage' };
+                }
+
+                // Yöntem 2: Chat.sendMessage (eğer varsa)
+                if (typeof chat.sendMessage === 'function') {
+                    await chat.sendMessage(message);
+                    return { success: true, method: 'chat.sendMessage' };
+                }
+
+                // Yöntem 3: ComposeBox API
+                if (Store.ComposeBox && Store.ComposeBox.send) {
+                    await Store.ComposeBox.send(chat, message);
+                    return { success: true, method: 'ComposeBox' };
+                }
+
+                // Yöntem 4: createMsgProtobuf
+                if (Store.MsgModel && Store.Msg) {
+                    const msg = new Store.MsgModel({
+                        id: Store.MsgKey.newId(),
+                        type: 'chat',
+                        body: message,
+                        to: wid,
+                        from: Store.Conn.wid,
+                        self: 'out',
+                        t: Math.floor(Date.now() / 1000)
+                    });
+                    await Store.Msg.send(msg);
+                    return { success: true, method: 'MsgModel' };
+                }
+
+                return { success: false, error: 'Mesaj gönderme yöntemi bulunamadı' };
+
+            } catch (err) {
+                return { success: false, error: err.message || String(err) };
+            }
+        }, chatId, message);
+
+        if (!result.success) {
+            // Store API başarısız olursa URL yöntemine geç
+            this.log(`Store API hatası: ${result.error}, URL yöntemi deneniyor...`, 'warning');
+            return await this.sendMessageViaURL(number, message);
+        }
+
+        this.log(`✅ Store API ile gönderildi (${result.method})`, 'success');
+        return result;
+    }
+
+    // Ana sayfada kalarak mesaj gönder (yeni tab açmaz)
+    async sendMessageViaURL(number, message) {
+        const page = this.client?.pupPage;
+        if (!page) throw new Error('Sayfa bulunamadı');
 
         try {
-            const encodedMessage = encodeURIComponent(message);
-            const waUrl = `https://web.whatsapp.com/send?phone=${number}&text=${encodedMessage}`;
+            // Ana sayfada olduğumuzdan emin ol
+            const currentUrl = page.url();
+            if (!currentUrl.includes('web.whatsapp.com')) {
+                await page.goto('https://web.whatsapp.com', { waitUntil: 'networkidle0', timeout: 30000 });
+                await new Promise(r => setTimeout(r, 3000));
+            }
 
-            newPage = await browser.newPage();
-            this.log(`🔗 Tab açıldı: ${number}`, 'info');
-
-            await newPage.goto(waUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-            await new Promise(r => setTimeout(r, 5000));
-
-            const selectors = [
-                'div[contenteditable="true"][data-tab="10"]',
-                'footer div[contenteditable="true"]',
-                'div[data-testid="conversation-compose-box-input"]'
+            // Yeni sohbet butonuna tıkla
+            const newChatSelectors = [
+                'div[data-testid="chat-list-header-menu"]',
+                'span[data-testid="menu"]',
+                'div[title="Yeni sohbet"]',
+                'span[data-icon="new-chat-outline"]',
+                'div[aria-label="Yeni sohbet"]'
             ];
 
-            for (const sel of selectors) {
+            let clicked = false;
+            for (const sel of newChatSelectors) {
                 try {
-                    await newPage.waitForSelector(sel, { timeout: 10000 });
-                    this.log(`✓ Mesaj kutusu bulundu`, 'info');
+                    await page.waitForSelector(sel, { timeout: 3000 });
+                    await page.click(sel);
+                    clicked = true;
+                    await new Promise(r => setTimeout(r, 1000));
                     break;
                 } catch (e) { }
             }
 
-            await new Promise(r => setTimeout(r, 2000));
-            await newPage.keyboard.press('Enter');
-            this.log(`⏎ Enter basıldı`, 'info');
+            // Arama kutusunu bul ve numarayı yaz
+            const searchSelectors = [
+                'div[data-testid="chat-list-search"]',
+                'div[contenteditable="true"][data-tab="3"]',
+                'div[title="Ara veya yeni sohbet başlat"]',
+                'div[role="textbox"]'
+            ];
 
-            await new Promise(r => setTimeout(r, 3000));
-            return { success: true };
-
-        } finally {
-            if (newPage) {
+            let searchBox = null;
+            for (const sel of searchSelectors) {
                 try {
-                    await newPage.close();
-                    this.log(`✓ Tab kapatıldı`, 'info');
+                    searchBox = await page.waitForSelector(sel, { timeout: 5000 });
+                    if (searchBox) break;
                 } catch (e) { }
             }
+
+            if (!searchBox) {
+                // Alternatif: Direkt URL ile git ama aynı sayfada
+                const encodedMessage = encodeURIComponent(message);
+                const waUrl = `https://web.whatsapp.com/send?phone=${number}&text=${encodedMessage}`;
+                
+                await page.goto(waUrl, { waitUntil: 'networkidle0', timeout: 60000 });
+                await new Promise(r => setTimeout(r, 5000));
+
+                // Enter'a bas
+                await page.keyboard.press('Enter');
+                await new Promise(r => setTimeout(r, 3000));
+
+                // Ana sayfaya dön
+                await page.goto('https://web.whatsapp.com', { waitUntil: 'networkidle0', timeout: 30000 });
+                await new Promise(r => setTimeout(r, 2000));
+
+                return { success: true };
+            }
+
+            // Numarayı yaz
+            await searchBox.click();
+            await page.keyboard.type(number, { delay: 50 });
+            await new Promise(r => setTimeout(r, 2000));
+
+            // Sonuçlardan ilkine tıkla veya yeni sohbet başlat
+            const resultSelectors = [
+                'div[data-testid="cell-frame-container"]',
+                'span[data-testid="chat-msg-text"]',
+                'div._ak8l',
+                'div[role="listitem"]'
+            ];
+
+            for (const sel of resultSelectors) {
+                try {
+                    const result = await page.waitForSelector(sel, { timeout: 5000 });
+                    if (result) {
+                        await result.click();
+                        break;
+                    }
+                } catch (e) { }
+            }
+
+            await new Promise(r => setTimeout(r, 2000));
+
+            // Mesaj kutusunu bul
+            const msgBoxSelectors = [
+                'div[data-testid="conversation-compose-box-input"]',
+                'div[contenteditable="true"][data-tab="10"]',
+                'footer div[contenteditable="true"]',
+                'div[role="textbox"][spellcheck="true"]'
+            ];
+
+            let msgBox = null;
+            for (const sel of msgBoxSelectors) {
+                try {
+                    msgBox = await page.waitForSelector(sel, { timeout: 5000 });
+                    if (msgBox) break;
+                } catch (e) { }
+            }
+
+            if (!msgBox) {
+                throw new Error('Mesaj kutusu bulunamadı');
+            }
+
+            // Mesajı yaz ve gönder
+            await msgBox.click();
+            await new Promise(r => setTimeout(r, 500));
+
+            // Mesajı parça parça yaz (uzun mesajlar için)
+            for (const line of message.split('\n')) {
+                await page.keyboard.type(line, { delay: 10 });
+                await page.keyboard.down('Shift');
+                await page.keyboard.press('Enter');
+                await page.keyboard.up('Shift');
+            }
+
+            await new Promise(r => setTimeout(r, 500));
+            await page.keyboard.press('Enter');
+            await new Promise(r => setTimeout(r, 2000));
+
+            // ESC'ye bas - sohbetten çık
+            await page.keyboard.press('Escape');
+            await new Promise(r => setTimeout(r, 500));
+
+            return { success: true };
+
+        } catch (error) {
+            // Hata durumunda ana sayfaya dönmeyi dene
+            try {
+                await page.goto('https://web.whatsapp.com', { waitUntil: 'networkidle0', timeout: 20000 });
+            } catch (e) { }
+            throw error;
         }
+    }
+
+    // Artık gerekli değil ama uyumluluk için bırak
+    async closeSendPage() {
+        // Artık ayrı sayfa kullanmıyoruz
     }
 
     // Davet gönder
@@ -453,30 +650,29 @@ class WhatsAppSession {
                         ? templates[Math.floor(Math.random() * templates.length)]
                         : templates[0];
 
-                    const result = await withTimeout(
+                    // URL yöntemi ile gönder (stabil)
+                    await withTimeout(
                         this.sendMessageViaURL(number, message),
                         90000,
                         'Mesaj gönderme zaman aşımı'
                     );
 
-                    if (result.success) {
-                        this.config.inviteHistory[number] = {
-                            lastInvite: new Date().toISOString(),
-                            count: (this.config.inviteHistory[number]?.count || 0) + 1
-                        };
-                        this.config.inviteStats.count++;
-                        sentCount++;
+                    this.config.inviteHistory[number] = {
+                        lastInvite: new Date().toISOString(),
+                        count: (this.config.inviteHistory[number]?.count || 0) + 1
+                    };
+                    this.config.inviteStats.count++;
+                    sentCount++;
 
-                        this.log(`✅ [${sentCount}] Gönderildi: ${number}`, 'success');
+                    this.log(`✅ [${sentCount}] Gönderildi: ${number}`, 'success');
 
-                        this.emitToSession('invite-progress', {
-                            current: i + 1,
-                            total,
-                            sent: sentCount,
-                            skipped: skipCount,
-                            number
-                        });
-                    }
+                    this.emitToSession('invite-progress', {
+                        current: i + 1,
+                        total,
+                        sent: sentCount,
+                        skipped: skipCount,
+                        number
+                    });
 
                 } catch (error) {
                     const errMsg = error.message || String(error);
@@ -512,6 +708,8 @@ class WhatsAppSession {
         } finally {
             this.isSendingInvites = false;
             this.emitToSession('invite-status', { active: false });
+            // Reusable tab'ı kapat
+            await this.closeSendPage();
         }
     }
 
